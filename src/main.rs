@@ -48,27 +48,34 @@ impl WriteModel {
 
 #[derive(Clone)]
 struct Termination {
-    signal: Arc<Sender<()>>,
-    wait: Arc<Mutex<Receiver<()>>>,
+    signal: Sender<()>,
 }
 
 impl Termination {
     fn new() -> Self {
-        let (tx, rx) = broadcast::channel(1);
-        Self {
-            signal: Arc::new(tx),
-            wait: Arc::new(Mutex::new(rx)),
-        }
+        let (signal, _rx) = broadcast::channel(1);
+        Self { signal }
     }
 
-    async fn wait(&self) {
-        let waiter = Arc::clone(&self.wait);
-        let mut waiter = waiter.lock().await;
-        waiter.recv().await.expect("msg");
+    fn waiter(&self) -> TerminationWaiter {
+        TerminationWaiter::new(self.signal.subscribe())
     }
 
     fn signal(&self) {
         self.signal.send(()).expect("msg");
+    }
+}
+
+#[derive(Clone)]
+struct TerminationWaiter(Arc<Mutex<Receiver<()>>>);
+
+impl TerminationWaiter {
+    fn new(receiver: Receiver<()>) -> Self {
+        Self(Arc::new(Mutex::new(receiver)))
+    }
+
+    async fn wait(self) {
+        self.0.lock().await.recv().await.expect("wtf")
     }
 }
 
@@ -88,7 +95,7 @@ where
         }
     }
 
-    fn start(&self, terminate: Termination) -> task::JoinHandle<()> {
+    fn start(&self, terminate: TerminationWaiter) -> task::JoinHandle<()> {
         let mut events = self.event_bus.subscribe();
         let write_model = Arc::clone(&self.write_model);
 
@@ -96,22 +103,19 @@ where
             loop {
                 tokio::select! {
                     event = events.poll() => {
-                        write_model.write().await.apply(event.expect("msg"));
+                        if let Ok(event) = event {
+                            write_model.write().await.apply(event)
+                        } else {
+                            break
+                        }
                     }
-                    _ = terminate.wait() => {
+                    // Wtf clone!
+                    _ = terminate.clone().wait() => {
                         break;
                     }
                 }
             }
         })
-    }
-
-    async fn run(&self) -> Result<()> {
-        let mut events = self.event_bus.subscribe();
-        loop {
-            let event = events.poll().await?;
-            self.write_model.write().await.apply(event);
-        }
     }
 
     async fn accept(&self, command: Command) -> bool {
@@ -130,31 +134,37 @@ where
 
 struct QueryHandler {
     read_model: Arc<RwLock<ReadModel>>,
-    poller: RefCell<Option<EventBusSubscription<Event>>>,
+    events: RefCell<Option<EventBusSubscription<Event>>>,
 }
 
 impl QueryHandler {
-    fn new(poller: EventBusSubscription<Event>) -> Self {
+    fn new(subscription: EventBusSubscription<Event>) -> Self {
         Self {
             read_model: Arc::new(RwLock::new(ReadModel::default())),
-            poller: RefCell::new(Some(poller)),
+            events: RefCell::new(Some(subscription)),
         }
     }
 
-    fn start(&self, termination: Termination) -> task::JoinHandle<()> {
+    fn start(&self, termination: TerminationWaiter) -> task::JoinHandle<()> {
         let read_model = Arc::clone(&self.read_model);
-        let mut poller = self
-            .poller
+        let mut events = self
+            .events
             .take()
             .expect("Must only start QueryHandler once");
 
         task::spawn(async move {
             loop {
                 tokio::select! {
-                    event = poller.poll() => {
-                        read_model.write().await.apply(event.expect("msg"));
+                    event = events.poll() => {
+                        if let Ok(event) = event {
+                            read_model.write().await.apply(event)
+                        } else {
+                            // log(event.error)
+                            break
+                        }
                     }
-                    _ = termination.wait() => { break }
+                    // Wtf clone
+                    _ = termination.clone().wait() => { break }
                 }
             }
         })
@@ -183,11 +193,12 @@ where
         }
     }
 
-    async fn start(&self, termination: Termination) {
+    async fn start(&self, termination: &Termination) {
+        let waiter = termination.waiter();
         tokio::select! {
-            _ = self.command_dispatcher.start(termination.clone()) => {}
-            _ = self.query_handler.start(termination.clone()) => {}
-            _ = termination.wait() => {}
+            _ = self.command_dispatcher.start(termination.waiter()) => {}
+            _ = self.query_handler.start(termination.waiter()) => {}
+            _ = waiter.wait() => {}
         }
     }
 
@@ -198,7 +209,7 @@ where
     // This belongs in the Command Dispatcher which has a WriteModel
     // ReadModel belongs in the Query Handler
     // They both need to subscribe to events emitted.
-    async fn accept(&mut self, command: Command) {
+    async fn accept(&self, command: Command) {
         self.command_dispatcher.accept(command).await;
     }
 }
@@ -454,7 +465,7 @@ async fn main() {
     .await;
 
     let termination = Termination::new();
-    cqrs.start(termination.clone()).await;
+    cqrs.start(&termination).await;
 
     sleep(Duration::from_secs(2));
 
