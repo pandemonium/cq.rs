@@ -26,8 +26,15 @@ struct ReadModel {
 }
 
 impl ReadModel {
-    fn apply(&mut self, _event: Event) {
-        todo!()
+    fn apply(&mut self, event: Event) {
+        match event {
+            Event::BookAdded(id, info) => {
+                self.books.insert(id, info);
+            }
+            Event::AuthorAdded(id, info) => {
+                self.authors.insert(id, info);
+            }
+        }
     }
 }
 
@@ -262,7 +269,7 @@ where
     }
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct UniqueId(Uuid);
 
 impl UniqueId {
@@ -286,7 +293,7 @@ struct BookInfo {
     author: AuthorId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct AuthorInfo {
     name: String,
 }
@@ -294,10 +301,10 @@ struct AuthorInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Isbn(String);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct AuthorId(UniqueId);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct BookId(UniqueId);
 
 struct AggregateStream {
@@ -333,14 +340,14 @@ impl TryFrom<AggregateStream> for Book {
     }
 }
 
-type AggregateError<Id> = <<Id as AggregateId>::Aggregate as TryFrom<AggregateStream>>::Error;
+type AggregateParseError<Id> = <<Id as AggregateId>::Aggregate as TryFrom<AggregateStream>>::Error;
 
 trait EventStore {
     async fn find_by_event_id(&self, id: UniqueId) -> Result<ExternalRepresentation>;
     async fn load_aggregate<Id>(&self, id: Id) -> Result<Id::Aggregate>
     where
         Id: AggregateId,
-        AggregateError<Id>: StdError + Send + Sync + 'static;
+        AggregateParseError<Id>: StdError + Send + Sync + 'static;
 
     // Use internal mutability instead?
     async fn persist<E>(&mut self, event: E) -> Result<E>
@@ -366,16 +373,41 @@ impl Event {
 }
 
 trait EventDescriptor: Sized {
-    async fn external_representation(&self) -> Result<ExternalRepresentation>;
-    async fn from_external_representation(external: ExternalRepresentation) -> Result<Self>;
+    fn external_representation(
+        &self,
+        event_id: UniqueId,
+        event_time: Instant,
+    ) -> Result<ExternalRepresentation>;
+    fn from_external_representation(external: ExternalRepresentation) -> Result<Self>;
 }
 
 impl EventDescriptor for Event {
-    async fn external_representation(&self) -> Result<ExternalRepresentation> {
-        todo!()
+    fn external_representation(
+        &self,
+        UniqueId(id): UniqueId,
+        when: Instant,
+    ) -> Result<ExternalRepresentation> {
+        match self {
+            Event::BookAdded(BookId(UniqueId(aggregate_id)), info) => Ok(ExternalRepresentation {
+                id,
+                when,
+                aggregate_id: *aggregate_id,
+                what: self.name().to_owned(),
+                data: serde_json::to_value(info)?,
+            }),
+            Event::AuthorAdded(AuthorId(UniqueId(aggregate_id)), info) => {
+                Ok(ExternalRepresentation {
+                    id,
+                    when,
+                    aggregate_id: *aggregate_id,
+                    what: self.name().to_owned(),
+                    data: serde_json::to_value(info)?,
+                })
+            }
+        }
     }
 
-    async fn from_external_representation(_external: ExternalRepresentation) -> Result<Self> {
+    fn from_external_representation(_external: ExternalRepresentation) -> Result<Self> {
         todo!()
     }
 }
@@ -414,14 +446,20 @@ impl EventStore for DummyStore {
     where
         E: EventDescriptor,
     {
-        self.events.push(event.external_representation().await?);
+        let event_id = UniqueId::fresh();
+        let timestamp = Instant::now();
+
+        let event_rep = event.external_representation(event_id, timestamp)?;
+        println!("Stored: {:?}", event_rep);
+
+        self.events.push(event_rep);
         Ok(event)
     }
 
     async fn load_aggregate<Id>(&self, aggregate_id: Id) -> Result<Id::Aggregate>
     where
         Id: AggregateId,
-        AggregateError<Id>: StdError + Send + Sync + 'static,
+        AggregateParseError<Id>: StdError + Send + Sync + 'static,
     {
         let UniqueId(id) = aggregate_id.id();
         let stream = AggregateStream::new(
@@ -452,14 +490,13 @@ async fn main() {
     let event_bus = EventBus::new(store);
     let cqrs = Cqrs::new(event_bus);
 
-    //    let x = store
-    //        .load_aggregate(BookId(UniqueId::fresh()))
-    //        .await
-    //        .expect("msg");
-
     cqrs.accept(Command::AddBook(BookInfo {
         isbn: Isbn("978-1-61729-961-2".to_owned()),
         title: "Functional Design and Architecture".to_owned(),
+
+        // CommandDispatcher to validate this against its WriteModel
+        // to make sure this Author exists -- otherwise it rejects
+        // the Command.
         author: AuthorId(UniqueId::fresh()),
     }))
     .await;
