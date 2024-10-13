@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::cell::RefCell;
 use std::error::Error as StdError;
+use std::fmt::{Debug, Display};
+use std::time::SystemTime;
 use std::{
     collections::HashMap,
     fmt,
@@ -10,6 +12,7 @@ use std::{
     thread::sleep,
     time::{Duration, Instant},
 };
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::{
     sync::{
         broadcast::{self, Receiver, Sender},
@@ -47,8 +50,12 @@ struct WriteModel {
 impl WriteModel {
     fn apply(&mut self, event: Event) {
         match event {
-            Event::BookAdded(..) => todo!(),
-            Event::AuthorAdded(..) => todo!(),
+            Event::BookAdded(id, info) => {
+                self.book_title_ids.entry(info.title).or_default().push(id)
+            }
+            Event::AuthorAdded(id, info) => {
+                self.author_name_ids.entry(info.name).or_default().push(id)
+            }
         }
     }
 }
@@ -81,7 +88,7 @@ impl TerminationWaiter {
         Self(Arc::new(Mutex::new(receiver)))
     }
 
-    async fn wait(self) {
+    async fn wait(&self) {
         self.0.lock().await.recv().await.expect("wtf")
     }
 }
@@ -102,11 +109,19 @@ where
         }
     }
 
-    fn start(&self, terminate: TerminationWaiter) -> task::JoinHandle<()> {
+    async fn start(&self, terminate: TerminationWaiter) -> task::JoinHandle<()> {
         let mut events = self.event_bus.subscribe();
         let write_model = Arc::clone(&self.write_model);
 
+        self.event_bus
+            .replay_journal()
+            .await
+            .expect("a working replay");
+
         task::spawn(async move {
+            // Can this be inverted somehow? No.
+            // The loop would  have to have a select in its body
+            // that inspects the terminate condition. Right?
             loop {
                 tokio::select! {
                     event = events.poll() => {
@@ -116,8 +131,7 @@ where
                             break
                         }
                     }
-                    // Wtf clone!
-                    _ = terminate.clone().wait() => {
+                    _ = terminate.wait() => {
                         break;
                     }
                 }
@@ -170,8 +184,7 @@ impl QueryHandler {
                             break
                         }
                     }
-                    // Wtf clone
-                    _ = termination.clone().wait() => { break }
+                    _ = termination.wait() => { break }
                 }
             }
         })
@@ -193,18 +206,21 @@ where
     ES: EventStore + Send + Sync + Clone + 'static,
 {
     fn new(event_bus: EventBus<ES, Event>) -> Self {
-        let event_poller = event_bus.subscribe();
+        let event_subscription = event_bus.subscribe();
         Cqrs {
             command_dispatcher: CommandDispatcher::new(event_bus),
-            query_handler: QueryHandler::new(event_poller),
+            query_handler: QueryHandler::new(event_subscription),
         }
     }
 
     async fn start(&self, termination: &Termination) {
+        let command_dispatcher = self.command_dispatcher.start(termination.waiter());
+        let query_handler = self.query_handler.start(termination.waiter());
+
         let waiter = termination.waiter();
         tokio::select! {
-            _ = self.command_dispatcher.start(termination.waiter()) => {}
-            _ = self.query_handler.start(termination.waiter()) => {}
+            _ = command_dispatcher => {}
+            _ = query_handler => {}
             _ = waiter.wait() => {}
         }
     }
@@ -237,6 +253,15 @@ where
             event_store: Mutex::new(event_store),
             tx,
         }
+    }
+
+    async fn replay_journal(&self) -> Result<()> {
+        println!("Replaying journal");
+        for event_repr in self.event_store.lock().await.journal().await {
+            let event = EventDescriptor::from_external_representation(event_repr)?;
+            self.emit(event).await?;
+        }
+        Ok(())
     }
 
     async fn emit(&self, event: E) -> Result<()> {
@@ -354,7 +379,7 @@ trait EventStore {
     where
         E: EventDescriptor;
 
-    // fn replay?
+    async fn journal(&self) -> impl Iterator<Item = &ExternalRepresentation>;
 }
 
 #[derive(Clone, Debug)]
@@ -364,10 +389,13 @@ enum Event {
 }
 
 impl Event {
+    const BOOK_ADDED: &str = "book-added";
+    const AUTHOR_ADDED: &str = "author-added";
+
     fn name(&self) -> &str {
         match self {
-            Event::BookAdded(..) => "book-added",
-            Event::AuthorAdded(..) => "author-added",
+            Event::BookAdded(..) => Self::BOOK_ADDED,
+            Event::AuthorAdded(..) => Self::AUTHOR_ADDED,
         }
     }
 }
@@ -376,16 +404,16 @@ trait EventDescriptor: Sized {
     fn external_representation(
         &self,
         event_id: UniqueId,
-        event_time: Instant,
+        event_time: SystemTime,
     ) -> Result<ExternalRepresentation>;
-    fn from_external_representation(external: ExternalRepresentation) -> Result<Self>;
+    fn from_external_representation(external: &ExternalRepresentation) -> Result<Self>;
 }
 
 impl EventDescriptor for Event {
     fn external_representation(
         &self,
         UniqueId(id): UniqueId,
-        when: Instant,
+        when: SystemTime,
     ) -> Result<ExternalRepresentation> {
         match self {
             Event::BookAdded(BookId(UniqueId(aggregate_id)), info) => Ok(ExternalRepresentation {
@@ -407,18 +435,53 @@ impl EventDescriptor for Event {
         }
     }
 
-    fn from_external_representation(_external: ExternalRepresentation) -> Result<Self> {
-        todo!()
+    fn from_external_representation(
+        ExternalRepresentation {
+            aggregate_id,
+            what,
+            data,
+            ..
+        }: &ExternalRepresentation,
+    ) -> Result<Self> {
+        match what.as_str() {
+            Event::AUTHOR_ADDED => Ok(Event::AuthorAdded(
+                AuthorId(UniqueId(*aggregate_id)),
+                serde_json::from_value(data.clone())?,
+            )),
+            Event::BOOK_ADDED => Ok(Event::BookAdded(
+                BookId(UniqueId(*aggregate_id)),
+                serde_json::from_value(data.clone())?,
+            )),
+            otherwise => Err(anyhow!("Unknown event-type `{}`", otherwise)),
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 struct ExternalRepresentation {
     id: Uuid,
-    when: Instant,
+    when: SystemTime,
     aggregate_id: Uuid,
     what: String,
     data: JsonValue,
+}
+
+impl Display for ExternalRepresentation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ExternalRepresentation {
+            id,
+            when,
+            aggregate_id,
+            what,
+            data,
+        } = self;
+
+        let when: OffsetDateTime = (*when).into();
+        writeln!(f, "[{when}] {aggregate_id}/{id} {what}")?;
+
+        let data = serde_json::to_string(data).expect("trust serde");
+        writeln!(f, "{data}")
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -447,10 +510,13 @@ impl EventStore for DummyStore {
         E: EventDescriptor,
     {
         let event_id = UniqueId::fresh();
-        let timestamp = Instant::now();
+
+        // does this take place here?
+        // Is this the right data type?
+        let timestamp = SystemTime::now();
 
         let event_rep = event.external_representation(event_id, timestamp)?;
-        println!("Stored: {:?}", event_rep);
+        println!("{}", event_rep);
 
         self.events.push(event_rep);
         Ok(event)
@@ -473,6 +539,10 @@ impl EventStore for DummyStore {
 
         Ok(stream.try_into()?)
     }
+
+    async fn journal(&self) -> impl Iterator<Item = &ExternalRepresentation> {
+        self.events.iter()
+    }
 }
 
 impl AggregateId for BookId {
@@ -490,6 +560,9 @@ async fn main() {
     let event_bus = EventBus::new(store);
     let cqrs = Cqrs::new(event_bus);
 
+    let termination = Termination::new();
+    cqrs.start(&termination).await;
+
     cqrs.accept(Command::AddBook(BookInfo {
         isbn: Isbn("978-1-61729-961-2".to_owned()),
         title: "Functional Design and Architecture".to_owned(),
@@ -501,8 +574,16 @@ async fn main() {
     }))
     .await;
 
-    let termination = Termination::new();
-    cqrs.start(&termination).await;
+    cqrs.accept(Command::AddBook(BookInfo {
+        isbn: Isbn("978-91-8002498-3".to_owned()),
+        title: "Superrika och jämlika".to_owned(),
+
+        // CommandDispatcher to validate this against its WriteModel
+        // to make sure this Author exists -- otherwise it rejects
+        // the Command.
+        author: AuthorId(UniqueId::fresh()),
+    }))
+    .await;
 
     sleep(Duration::from_secs(2));
 
