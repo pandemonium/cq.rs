@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 use std::cell::RefCell;
 use std::error::Error as StdError;
 use std::fmt::{Debug, Display};
@@ -118,6 +118,7 @@ where
             .await
             .expect("a working replay");
 
+        println!("Spawn CommandDispatcher run loop ");
         task::spawn(async move {
             // Can this be inverted somehow? No.
             // The loop would  have to have a select in its body
@@ -258,14 +259,21 @@ where
     async fn replay_journal(&self) -> Result<()> {
         println!("Replaying journal");
         for event_repr in self.event_store.lock().await.journal().await {
+            println!("--> {event_repr}");
             let event = EventDescriptor::from_external_representation(event_repr)?;
-            self.emit(event).await?;
+
+            // Emit event without re-persisting it
+            self.tx.send(event)?;
+
+            println!("Done.")
         }
+
         Ok(())
     }
 
     async fn emit(&self, event: E) -> Result<()> {
         let event = self.event_store.lock().await.persist(event).await?;
+
         self.tx.send(event)?;
         Ok(())
     }
@@ -309,6 +317,7 @@ enum Command {
 
 enum Query {
     Authors(String),
+    Books,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -492,7 +501,7 @@ struct DummyStore {
 impl DummyStore {}
 
 trait AggregateId {
-    type Aggregate: TryFrom<AggregateStream> + fmt::Debug;
+    type Aggregate: TryFrom<AggregateStream>;
     fn id(&self) -> &UniqueId;
 }
 
@@ -556,7 +565,15 @@ impl AggregateId for BookId {
 
 #[tokio::main]
 async fn main() {
-    let store = DummyStore::default();
+    let store = DummyStore {
+        events: vec![ExternalRepresentation {
+            id: Uuid::new_v4(),
+            when: SystemTime::now(),
+            aggregate_id: Uuid::new_v4(),
+            what: "book-added".to_owned(),
+            data: json!({"author":"ba68afbe-83a7-4a5e-9619-8a32a8967b28","isbn":"978-1-61180-697-7","title":"The Art of War"}),
+        }],
+    };
     let event_bus = EventBus::new(store);
     let cqrs = Cqrs::new(event_bus);
 
@@ -584,6 +601,9 @@ async fn main() {
         author: AuthorId(UniqueId::fresh()),
     }))
     .await;
+
+    // What is the return value of this?
+    cqrs.pose(Query::Books).await;
 
     sleep(Duration::from_secs(2));
 
