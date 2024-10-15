@@ -5,14 +5,8 @@ use std::cell::RefCell;
 use std::error::Error as StdError;
 use std::fmt::{Debug, Display};
 use std::time::SystemTime;
-use std::{
-    collections::HashMap,
-    fmt,
-    sync::Arc,
-    thread::sleep,
-    time::{Duration, Instant},
-};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use std::{collections::HashMap, fmt, sync::Arc, thread::sleep, time::Duration};
+use time::OffsetDateTime;
 use tokio::{
     sync::{
         broadcast::{self, Receiver, Sender},
@@ -20,19 +14,24 @@ use tokio::{
     },
     task,
 };
-use uuid::Uuid;
+use uuid::{uuid, Uuid};
 
 #[derive(Default)]
 struct ReadModel {
     authors: HashMap<AuthorId, AuthorInfo>,
     books: HashMap<BookId, BookInfo>,
+    books_by_author_id: HashMap<AuthorId, Vec<BookId>>,
 }
 
 impl ReadModel {
     fn apply(&mut self, event: Event) {
         match event {
             Event::BookAdded(id, info) => {
-                self.books.insert(id, info);
+                self.books.insert(id.clone(), info.clone());
+                self.books_by_author_id
+                    .entry(info.author)
+                    .or_default()
+                    .push(id);
             }
             Event::AuthorAdded(id, info) => {
                 self.authors.insert(id, info);
@@ -191,9 +190,12 @@ impl QueryHandler {
         })
     }
 
-    // Can I know something about the return type, given a query?
-    fn pose(&self, _query: Query) -> Vec<String> {
-        todo!()
+    async fn pose<Q>(&self, query: Q) -> Result<Q::Output>
+    where
+        Q: ReadModelQuery,
+    {
+        let read_model = self.read_model.read().await;
+        Ok(query.execute(&read_model))
     }
 }
 
@@ -226,8 +228,11 @@ where
         }
     }
 
-    async fn pose(&self, query: Query) {
-        self.query_handler.pose(query);
+    async fn pose<Q>(&self, query: Q) -> Result<Q::Output>
+    where
+        Q: ReadModelQuery,
+    {
+        self.query_handler.pose(query).await
     }
 
     // This belongs in the Command Dispatcher which has a WriteModel
@@ -315,9 +320,35 @@ enum Command {
     AddBook(BookInfo),
 }
 
-enum Query {
-    Authors(String),
-    Books,
+struct AuthorById(AuthorId);
+
+trait ReadModelQuery {
+    type Output;
+
+    fn execute(&self, model: &ReadModel) -> Self::Output;
+}
+
+struct QueryBooksByAuthorId(AuthorId);
+
+impl ReadModelQuery for QueryBooksByAuthorId {
+    type Output = Result<Vec<Book>>;
+
+    fn execute(&self, model: &ReadModel) -> Self::Output {
+        let QueryBooksByAuthorId(author_id) = self;
+        if let Some(book_ids) = model.books_by_author_id.get(author_id) {
+            Ok(book_ids
+                .iter()
+                .filter_map(|id| {
+                    model
+                        .books
+                        .get(id)
+                        .map(|info| Book(id.clone(), info.clone()))
+                })
+                .collect::<Vec<_>>())
+        } else {
+            Ok(vec![])
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -341,14 +372,22 @@ struct AuthorId(UniqueId);
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct BookId(UniqueId);
 
-struct AggregateStream {
+struct AggregateEventStream {
     id: UniqueId,
     event_stream: Vec<ExternalRepresentation>,
 }
 
-impl AggregateStream {
+impl AggregateEventStream {
     fn new(id: UniqueId, event_stream: Vec<ExternalRepresentation>) -> Self {
         Self { id, event_stream }
+    }
+
+    fn into_root<Aggregate>(self) -> Result<Aggregate::Root>
+    where
+        Aggregate: AggregateIdentity,
+        AggregateParseError<Aggregate>: StdError + Send + Sync + 'static,
+    {
+        Ok(self.try_into()?)
     }
 }
 
@@ -358,30 +397,31 @@ struct Author(AuthorId, AuthorInfo);
 #[derive(Debug)]
 struct Book(BookId, BookInfo);
 
-impl TryFrom<AggregateStream> for Author {
+impl TryFrom<AggregateEventStream> for Author {
     type Error = anyhow::Error;
 
-    fn try_from(_value: AggregateStream) -> Result<Self, Self::Error> {
+    fn try_from(_value: AggregateEventStream) -> Result<Self, Self::Error> {
         todo!()
     }
 }
 
-impl TryFrom<AggregateStream> for Book {
-    type Error = Box<dyn StdError + Send + Sync>;
+impl TryFrom<AggregateEventStream> for Book {
+    type Error = anyhow::Error;
 
-    fn try_from(_value: AggregateStream) -> Result<Self, Self::Error> {
+    fn try_from(_value: AggregateEventStream) -> Result<Self, Self::Error> {
         todo!()
     }
 }
 
-type AggregateParseError<Id> = <<Id as AggregateId>::Aggregate as TryFrom<AggregateStream>>::Error;
+type AggregateParseError<Id> =
+    <<Id as AggregateIdentity>::Root as TryFrom<AggregateEventStream>>::Error;
 
 trait EventStore {
     async fn find_by_event_id(&self, id: UniqueId) -> Result<ExternalRepresentation>;
-    async fn load_aggregate<Id>(&self, id: Id) -> Result<Id::Aggregate>
+    async fn load_aggregate<Aggregate>(&self, aggregate: Aggregate) -> Result<Aggregate::Root>
     where
-        Id: AggregateId,
-        AggregateParseError<Id>: StdError + Send + Sync + 'static;
+        Aggregate: AggregateIdentity,
+        AggregateParseError<Aggregate>: StdError + Send + Sync + 'static;
 
     // Use internal mutability instead?
     async fn persist<E>(&mut self, event: E) -> Result<E>
@@ -500,8 +540,9 @@ struct DummyStore {
 
 impl DummyStore {}
 
-trait AggregateId {
-    type Aggregate: TryFrom<AggregateStream>;
+trait AggregateIdentity {
+    type Root: TryFrom<AggregateEventStream>;
+
     fn id(&self) -> &UniqueId;
 }
 
@@ -531,22 +572,21 @@ impl EventStore for DummyStore {
         Ok(event)
     }
 
-    async fn load_aggregate<Id>(&self, aggregate_id: Id) -> Result<Id::Aggregate>
+    async fn load_aggregate<Aggregate>(&self, aggregate: Aggregate) -> Result<Aggregate::Root>
     where
-        Id: AggregateId,
-        AggregateParseError<Id>: StdError + Send + Sync + 'static,
+        Aggregate: AggregateIdentity,
+        AggregateParseError<Aggregate>: StdError + Send + Sync + 'static,
     {
-        let UniqueId(id) = aggregate_id.id();
-        let stream = AggregateStream::new(
-            *aggregate_id.id(),
+        let aggregate_id @ UniqueId(id) = *aggregate.id();
+        AggregateEventStream::new(
+            aggregate_id,
             self.events
                 .iter()
-                .filter(|e| &e.aggregate_id == id)
+                .filter(|e| e.aggregate_id == id)
                 .cloned()
                 .collect(),
-        );
-
-        Ok(stream.try_into()?)
+        )
+        .into_root::<Aggregate>()
     }
 
     async fn journal(&self) -> impl Iterator<Item = &ExternalRepresentation> {
@@ -554,8 +594,8 @@ impl EventStore for DummyStore {
     }
 }
 
-impl AggregateId for BookId {
-    type Aggregate = Book;
+impl AggregateIdentity for BookId {
+    type Root = Book;
 
     fn id(&self) -> &UniqueId {
         let BookId(id) = self;
@@ -603,7 +643,13 @@ async fn main() {
     .await;
 
     // What is the return value of this?
-    cqrs.pose(Query::Books).await;
+    let books = cqrs
+        .pose(QueryBooksByAuthorId(AuthorId(UniqueId(uuid!(
+            "ba68afbe-83a7-4a5e-9619-8a32a8967b28"
+        )))))
+        .await
+        .expect("Where is my book?");
+    println!("Books: {books:?}");
 
     sleep(Duration::from_secs(2));
 
