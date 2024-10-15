@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::cell::RefCell;
-use std::error::Error as StdError;
+use std::collections::HashSet;
 use std::fmt::{Debug, Display};
 use std::time::SystemTime;
 use std::{collections::HashMap, fmt, sync::Arc, thread::sleep, time::Duration};
@@ -44,6 +44,7 @@ impl ReadModel {
 struct WriteModel {
     author_name_ids: HashMap<String, Vec<AuthorId>>,
     book_title_ids: HashMap<String, Vec<BookId>>,
+    author_ids: HashSet<AuthorId>,
 }
 
 impl WriteModel {
@@ -53,7 +54,11 @@ impl WriteModel {
                 self.book_title_ids.entry(info.title).or_default().push(id)
             }
             Event::AuthorAdded(id, info) => {
-                self.author_name_ids.entry(info.name).or_default().push(id)
+                self.author_name_ids
+                    .entry(info.name)
+                    .or_default()
+                    .push(id.clone());
+                self.author_ids.insert(id);
             }
         }
     }
@@ -142,9 +147,31 @@ where
     async fn accept(&self, command: Command) -> bool {
         match command {
             Command::AddBook(info) => {
-                let id = BookId(UniqueId::fresh());
+                // Can this be transpanted onto a Book aggregate
+                // type? It would have: create(id) and emit events.
+                // Or does it need to look stuff up so that that
+                // won't work very well?
+                if self
+                    .write_model
+                    .read()
+                    .await
+                    .author_ids
+                    .contains(&info.author)
+                {
+                    let id = BookId(UniqueId::fresh());
+                    self.event_bus
+                        .emit(Event::BookAdded(id, info))
+                        .await
+                        .expect("emit");
+                    true
+                } else {
+                    false
+                }
+            }
+            Command::AddAuthor(info) => {
+                let id = AuthorId(UniqueId::fresh());
                 self.event_bus
-                    .emit(Event::BookAdded(id, info))
+                    .emit(Event::AuthorAdded(id, info))
                     .await
                     .expect("emit");
                 true
@@ -190,7 +217,7 @@ impl QueryHandler {
         })
     }
 
-    async fn pose<Q>(&self, query: Q) -> Result<Q::Output>
+    async fn issue<Q>(&self, query: Q) -> Result<Q::Output>
     where
         Q: ReadModelQuery,
     {
@@ -199,18 +226,18 @@ impl QueryHandler {
     }
 }
 
-struct Cqrs<ES> {
+struct CommandQueryOrchestrator<ES> {
     command_dispatcher: CommandDispatcher<ES>,
     query_handler: QueryHandler,
 }
 
-impl<ES> Cqrs<ES>
+impl<ES> CommandQueryOrchestrator<ES>
 where
     ES: EventStore + Send + Sync + Clone + 'static,
 {
     fn new(event_bus: EventBus<ES, Event>) -> Self {
         let event_subscription = event_bus.subscribe();
-        Cqrs {
+        CommandQueryOrchestrator {
             command_dispatcher: CommandDispatcher::new(event_bus),
             query_handler: QueryHandler::new(event_subscription),
         }
@@ -228,17 +255,17 @@ where
         }
     }
 
-    async fn pose<Q>(&self, query: Q) -> Result<Q::Output>
+    async fn issue_query<Q>(&self, query: Q) -> Result<Q::Output>
     where
         Q: ReadModelQuery,
     {
-        self.query_handler.pose(query).await
+        self.query_handler.issue(query).await
     }
 
     // This belongs in the Command Dispatcher which has a WriteModel
     // ReadModel belongs in the Query Handler
     // They both need to subscribe to events emitted.
-    async fn accept(&self, command: Command) {
+    async fn post_command(&self, command: Command) {
         self.command_dispatcher.accept(command).await;
     }
 }
@@ -264,21 +291,14 @@ where
     async fn replay_journal(&self) -> Result<()> {
         println!("Replaying journal");
         for event_repr in self.event_store.lock().await.journal().await {
-            println!("--> {event_repr}");
             let event = EventDescriptor::from_external_representation(event_repr)?;
-
-            // Emit event without re-persisting it
             self.tx.send(event)?;
-
-            println!("Done.")
         }
-
         Ok(())
     }
 
     async fn emit(&self, event: E) -> Result<()> {
         let event = self.event_store.lock().await.persist(event).await?;
-
         self.tx.send(event)?;
         Ok(())
     }
@@ -318,6 +338,7 @@ impl UniqueId {
 
 enum Command {
     AddBook(BookInfo),
+    AddAuthor(AuthorInfo),
 }
 
 struct AuthorById(AuthorId);
@@ -369,25 +390,61 @@ struct Isbn(String);
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct AuthorId(UniqueId);
 
+impl AggregateRoot for Author {
+    type Id = AuthorId;
+
+    fn try_load(stream: AggregateStream) -> Result<Self> {
+        if let Event::AuthorAdded(id, info) = stream.peek()? {
+            Ok(Author(id, info))
+        } else {
+            Err(anyhow!("expected an AuthorAdded"))
+        }
+    }
+}
+
+impl AggregateIdentity for AuthorId {
+    type Root = Author;
+
+    fn id(&self) -> &UniqueId {
+        let AuthorId(id) = self;
+        id
+    }
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct BookId(UniqueId);
 
-struct AggregateEventStream {
-    id: UniqueId,
-    event_stream: Vec<ExternalRepresentation>,
+impl AggregateRoot for Book {
+    type Id = BookId;
+
+    fn try_load(stream: AggregateStream) -> Result<Self> {
+        if let Event::BookAdded(id, info) = stream.peek()? {
+            Ok(Book(id, info))
+        } else {
+            Err(anyhow!("expected an BookAdded"))
+        }
+    }
 }
 
-impl AggregateEventStream {
-    fn new(id: UniqueId, event_stream: Vec<ExternalRepresentation>) -> Self {
-        Self { id, event_stream }
-    }
+impl AggregateIdentity for BookId {
+    type Root = Book;
 
-    fn into_root<Aggregate>(self) -> Result<Aggregate::Root>
+    fn id(&self) -> &UniqueId {
+        let BookId(id) = self;
+        id
+    }
+}
+
+struct AggregateStream(Vec<ExternalRepresentation>);
+
+impl AggregateStream {
+    fn peek<E>(&self) -> Result<E>
     where
-        Aggregate: AggregateIdentity,
-        AggregateParseError<Aggregate>: StdError + Send + Sync + 'static,
+        E: EventDescriptor,
     {
-        Ok(self.try_into()?)
+        Ok(E::from_external_representation(
+            self.0.first().ok_or(anyhow!("expected an event"))?,
+        )?)
     }
 }
 
@@ -397,31 +454,17 @@ struct Author(AuthorId, AuthorInfo);
 #[derive(Debug)]
 struct Book(BookId, BookInfo);
 
-impl TryFrom<AggregateEventStream> for Author {
-    type Error = anyhow::Error;
-
-    fn try_from(_value: AggregateEventStream) -> Result<Self, Self::Error> {
-        todo!()
-    }
-}
-
-impl TryFrom<AggregateEventStream> for Book {
-    type Error = anyhow::Error;
-
-    fn try_from(_value: AggregateEventStream) -> Result<Self, Self::Error> {
-        todo!()
-    }
-}
-
-type AggregateParseError<Id> =
-    <<Id as AggregateIdentity>::Root as TryFrom<AggregateEventStream>>::Error;
-
 trait EventStore {
     async fn find_by_event_id(&self, id: UniqueId) -> Result<ExternalRepresentation>;
+    async fn find_by_aggregate_id(&self, id: UniqueId) -> Result<Vec<ExternalRepresentation>>;
+
     async fn load_aggregate<Aggregate>(&self, aggregate: Aggregate) -> Result<Aggregate::Root>
     where
         Aggregate: AggregateIdentity,
-        AggregateParseError<Aggregate>: StdError + Send + Sync + 'static;
+    {
+        let stream = self.find_by_aggregate_id(*aggregate.id()).await?;
+        Aggregate::Root::try_load(AggregateStream(stream))
+    }
 
     // Use internal mutability instead?
     async fn persist<E>(&mut self, event: E) -> Result<E>
@@ -540,8 +583,14 @@ struct DummyStore {
 
 impl DummyStore {}
 
+trait AggregateRoot: Sized {
+    type Id: AggregateIdentity;
+
+    fn try_load(stream: AggregateStream) -> Result<Self>;
+}
+
 trait AggregateIdentity {
-    type Root: TryFrom<AggregateEventStream>;
+    type Root: AggregateRoot<Id = Self>;
 
     fn id(&self) -> &UniqueId;
 }
@@ -553,6 +602,18 @@ impl EventStore for DummyStore {
             .find(|e| e.id == id)
             .ok_or(anyhow!("No such event"))
             .cloned()
+    }
+
+    async fn find_by_aggregate_id(
+        &self,
+        UniqueId(id): UniqueId,
+    ) -> Result<Vec<ExternalRepresentation>> {
+        Ok(self
+            .events
+            .iter()
+            .filter(|e| e.aggregate_id == id)
+            .cloned()
+            .collect())
     }
 
     async fn persist<E>(&mut self, event: E) -> Result<E>
@@ -572,34 +633,8 @@ impl EventStore for DummyStore {
         Ok(event)
     }
 
-    async fn load_aggregate<Aggregate>(&self, aggregate: Aggregate) -> Result<Aggregate::Root>
-    where
-        Aggregate: AggregateIdentity,
-        AggregateParseError<Aggregate>: StdError + Send + Sync + 'static,
-    {
-        let aggregate_id @ UniqueId(id) = *aggregate.id();
-        AggregateEventStream::new(
-            aggregate_id,
-            self.events
-                .iter()
-                .filter(|e| e.aggregate_id == id)
-                .cloned()
-                .collect(),
-        )
-        .into_root::<Aggregate>()
-    }
-
     async fn journal(&self) -> impl Iterator<Item = &ExternalRepresentation> {
         self.events.iter()
-    }
-}
-
-impl AggregateIdentity for BookId {
-    type Root = Book;
-
-    fn id(&self) -> &UniqueId {
-        let BookId(id) = self;
-        id
     }
 }
 
@@ -615,40 +650,43 @@ async fn main() {
         }],
     };
     let event_bus = EventBus::new(store);
-    let cqrs = Cqrs::new(event_bus);
+    let orchestrator = CommandQueryOrchestrator::new(event_bus);
 
     let termination = Termination::new();
-    cqrs.start(&termination).await;
+    orchestrator.start(&termination).await;
 
-    cqrs.accept(Command::AddBook(BookInfo {
-        isbn: Isbn("978-1-61729-961-2".to_owned()),
-        title: "Functional Design and Architecture".to_owned(),
+    orchestrator
+        .post_command(Command::AddBook(BookInfo {
+            isbn: Isbn("978-1-61729-961-2".to_owned()),
+            title: "Functional Design and Architecture".to_owned(),
 
-        // CommandDispatcher to validate this against its WriteModel
-        // to make sure this Author exists -- otherwise it rejects
-        // the Command.
-        author: AuthorId(UniqueId::fresh()),
-    }))
-    .await;
+            // CommandDispatcher to validate this against its WriteModel
+            // to make sure this Author exists -- otherwise it rejects
+            // the Command.
+            author: AuthorId(UniqueId::fresh()),
+        }))
+        .await;
 
-    cqrs.accept(Command::AddBook(BookInfo {
-        isbn: Isbn("978-91-8002498-3".to_owned()),
-        title: "Superrika och jämlika".to_owned(),
+    orchestrator
+        .post_command(Command::AddBook(BookInfo {
+            isbn: Isbn("978-91-8002498-3".to_owned()),
+            title: "Superrika och jämlika".to_owned(),
 
-        // CommandDispatcher to validate this against its WriteModel
-        // to make sure this Author exists -- otherwise it rejects
-        // the Command.
-        author: AuthorId(UniqueId::fresh()),
-    }))
-    .await;
+            // CommandDispatcher to validate this against its WriteModel
+            // to make sure this Author exists -- otherwise it rejects
+            // the Command.
+            author: AuthorId(UniqueId::fresh()),
+        }))
+        .await;
 
     // What is the return value of this?
-    let books = cqrs
-        .pose(QueryBooksByAuthorId(AuthorId(UniqueId(uuid!(
+    let books = orchestrator
+        .issue_query(QueryBooksByAuthorId(AuthorId(UniqueId(uuid!(
             "ba68afbe-83a7-4a5e-9619-8a32a8967b28"
         )))))
         .await
         .expect("Where is my book?");
+
     println!("Books: {books:?}");
 
     sleep(Duration::from_secs(2));
