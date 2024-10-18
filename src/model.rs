@@ -1,10 +1,11 @@
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
+
 use crate::infrastructure::{
     AggregateIdentity, AggregateRoot, AggregateStream, EventDescriptor, ExternalRepresentation,
     UniqueId,
 };
-use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -23,6 +24,7 @@ impl Event {
         }
     }
 }
+
 impl EventDescriptor for Event {
     fn external_representation(
         &self,

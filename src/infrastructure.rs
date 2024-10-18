@@ -73,6 +73,7 @@ impl Display for ExternalRepresentation {
     }
 }
 
+// Can I combine AggregateRoot with AggregateIdentity?
 pub trait AggregateRoot: Sized {
     type Id: AggregateIdentity;
 

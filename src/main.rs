@@ -1,15 +1,10 @@
 use anyhow::{anyhow, Result};
-use serde_json::json;
+use blister::{application::CommandQueryOrchestrator, http};
 use std::fmt::Debug;
 use std::time::SystemTime;
-use std::{thread::sleep, time::Duration};
-use uuid::{uuid, Uuid};
+use tokio::net::TcpListener;
 
-use blister::{
-    application::{CommandQueryOrchestrator, EventBus, QueryBooksByAuthorId, Termination},
-    infrastructure::{EventDescriptor, EventStore, ExternalRepresentation, UniqueId},
-    model::{AuthorId, BookInfo, Command, Isbn},
-};
+use blister::infrastructure::{EventDescriptor, EventStore, ExternalRepresentation, UniqueId};
 
 #[derive(Clone, Debug, Default)]
 struct DummyStore {
@@ -61,8 +56,7 @@ impl EventStore for DummyStore {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn make_orchestrator() -> CommandQueryOrchestrator<_> {
     let store = DummyStore {
         events: vec![ExternalRepresentation {
             id: Uuid::new_v4(),
@@ -73,46 +67,19 @@ async fn main() {
         }],
     };
     let event_bus = EventBus::new(store);
-    let orchestrator = CommandQueryOrchestrator::new(event_bus);
+    CommandQueryOrchestrator::new(event_bus)
+}
 
-    let termination = Termination::new();
-    orchestrator.start(&termination).await;
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
 
-    orchestrator
-        .submit_command(Command::AddBook(BookInfo {
-            isbn: Isbn("978-1-61729-961-2".to_owned()),
-            title: "Functional Design and Architecture".to_owned(),
-
-            // CommandDispatcher to validate this against its WriteModel
-            // to make sure this Author exists -- otherwise it rejects
-            // the Command.
-            author: AuthorId(UniqueId::fresh()),
-        }))
-        .await;
-
-    orchestrator
-        .submit_command(Command::AddBook(BookInfo {
-            isbn: Isbn("978-91-8002498-3".to_owned()),
-            title: "Superrika och jämlika".to_owned(),
-
-            // CommandDispatcher to validate this against its WriteModel
-            // to make sure this Author exists -- otherwise it rejects
-            // the Command.
-            author: AuthorId(UniqueId::fresh()),
-        }))
-        .await;
-
-    // What is the return value of this?
-    let books = orchestrator
-        .issue_query(QueryBooksByAuthorId(AuthorId(UniqueId(uuid!(
-            "ba68afbe-83a7-4a5e-9619-8a32a8967b28"
-        )))))
+    let listener = TcpListener::bind("0.0.0.0:3000")
         .await
-        .expect("Where is my book?");
+        .expect("a free port");
 
-    println!("Books: {books:?}");
-
-    sleep(Duration::from_secs(2));
-
-    termination.signal();
+    http::Api::new(make_orchestrator())
+        .start(listener)
+        .await
+        .expect("msg");
 }

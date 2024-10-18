@@ -1,5 +1,3 @@
-use super::model::*;
-use crate::infrastructure::{EventDescriptor, EventStore, UniqueId};
 use anyhow::Result;
 use std::{
     cell::RefCell,
@@ -13,6 +11,11 @@ use tokio::{
         Mutex, RwLock,
     },
     task,
+};
+
+use crate::{
+    infrastructure::{EventDescriptor, EventStore, UniqueId},
+    model::{AuthorId, AuthorInfo, Book, BookId, BookInfo, Command, Event},
 };
 
 #[derive(Clone)]
@@ -40,7 +43,7 @@ where
     fn new(event_bus: EventBus<ES, Event>) -> Self {
         Self {
             event_bus,
-            write_model: Arc::new(RwLock::new(WriteModel::default())),
+            write_model: Default::default(),
         }
     }
 
@@ -48,12 +51,12 @@ where
         let mut events = self.event_bus.subscribe();
         let write_model = Arc::clone(&self.write_model);
 
+        // Is there a race condition between this and the ReadModel subscriber?
         self.event_bus
             .replay_journal()
             .await
             .expect("a working replay");
 
-        println!("Spawn CommandDispatcher run loop ");
         task::spawn(async move {
             // Can this be inverted somehow? No.
             // The loop would  have to have a select in its body
@@ -113,27 +116,26 @@ where
 
 struct QueryHandler {
     read_model: Arc<RwLock<ReadModel>>,
-    events: RefCell<Option<EventBusSubscription<Event>>>,
+    events: Arc<EventBusSubscription<Event>>,
 }
 
 impl QueryHandler {
     fn new(subscription: EventBusSubscription<Event>) -> Self {
         Self {
-            read_model: Arc::new(RwLock::new(ReadModel::default())),
-            events: RefCell::new(Some(subscription)),
+            read_model: Default::default(),
+            events: Arc::new(subscription),
         }
     }
 
     fn start(&self, termination: TerminationWaiter) -> task::JoinHandle<()> {
         let read_model = Arc::clone(&self.read_model);
-        let mut events = self
-            .events
-            .take()
-            .expect("Must only start QueryHandler once");
+        let events = Arc::clone(&self.events);
 
         task::spawn(async move {
             loop {
                 tokio::select! {
+                    // is it necessary to have this wrapper? It looks better
+                    // but causes a Mutex
                     event = events.poll() => {
                         if let Ok(event) = event {
                             read_model.write().await.apply(event)
@@ -153,6 +155,9 @@ impl QueryHandler {
         Q: ReadModelQuery,
     {
         let read_model = self.read_model.read().await;
+
+        println!("{read_model:?}");
+
         Ok(query.execute(&read_model))
     }
 }
@@ -175,13 +180,10 @@ where
     }
 
     pub async fn start(&self, termination: &Termination) {
-        let command_dispatcher = self.command_dispatcher.start(termination.waiter());
-        let query_handler = self.query_handler.start(termination.waiter());
-
         let waiter = termination.waiter();
         tokio::select! {
-            _ = command_dispatcher => {}
-            _ = query_handler => {}
+            _ = self.command_dispatcher.start(termination.waiter()) => {}
+            _ = self.query_handler.start(termination.waiter()) => {}
             _ = waiter.wait() => {}
         }
     }
@@ -201,6 +203,7 @@ where
     }
 }
 
+// This has to lose the EventStore.
 pub struct EventBus<ES, E> {
     event_store: Mutex<ES>,
     tx: Sender<E>,
@@ -223,11 +226,15 @@ where
         println!("Replaying journal");
         for event_repr in self.event_store.lock().await.journal().await {
             let event = EventDescriptor::from_external_representation(event_repr)?;
+
+            println!("Sending {event:?}");
             self.tx.send(event)?;
         }
         Ok(())
     }
 
+    // Can I do something here to force a persist to be required before issuing a send?
+    // It is not possible to
     async fn emit(&self, event: E) -> Result<()> {
         let event = self.event_store.lock().await.persist(event).await?;
         self.tx.send(event)?;
@@ -240,7 +247,7 @@ where
 }
 
 struct EventBusSubscription<E> {
-    rx: Receiver<E>,
+    rx: Mutex<Receiver<E>>,
 }
 
 impl<E> EventBusSubscription<E>
@@ -248,13 +255,11 @@ where
     E: EventDescriptor + Sync + Send + Clone + 'static,
 {
     fn new(rx: Receiver<E>) -> Self {
-        Self { rx }
+        Self { rx: Mutex::new(rx) }
     }
 
-    async fn poll(&mut self) -> Result<E> {
-        // So perhaps I cannot own it?
-        // Make it internally mutable.
-        Ok(self.rx.recv().await?)
+    async fn poll(&self) -> Result<E> {
+        Ok(self.rx.lock().await.recv().await?)
     }
 }
 
@@ -287,7 +292,7 @@ impl ReadModelQuery for QueryBooksByAuthorId {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ReadModel {
     authors: HashMap<AuthorId, AuthorInfo>,
     books: HashMap<BookId, BookInfo>,
@@ -296,6 +301,7 @@ pub struct ReadModel {
 
 impl ReadModel {
     fn apply(&mut self, event: Event) {
+        println!("Apply {event:?}");
         match event {
             Event::BookAdded(id, info) => {
                 self.books.insert(id.clone(), info.clone());
