@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::{
@@ -7,6 +6,8 @@ use std::{
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+use crate::model::{DomainError, DomainResult};
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UniqueId(pub Uuid);
@@ -18,10 +19,11 @@ impl UniqueId {
 }
 
 pub trait EventStore {
-    async fn find_by_event_id(&self, id: UniqueId) -> Result<ExternalRepresentation>;
-    async fn find_by_aggregate_id(&self, id: UniqueId) -> Result<Vec<ExternalRepresentation>>;
+    async fn find_by_event_id(&self, id: UniqueId) -> DomainResult<ExternalRepresentation>;
+    async fn find_by_aggregate_id(&self, id: UniqueId)
+        -> DomainResult<Vec<ExternalRepresentation>>;
 
-    async fn load_aggregate<Aggregate>(&self, aggregate: Aggregate) -> Result<Aggregate::Root>
+    async fn load_aggregate<Aggregate>(&self, aggregate: Aggregate) -> DomainResult<Aggregate::Root>
     where
         Aggregate: AggregateIdentity,
     {
@@ -30,9 +32,12 @@ pub trait EventStore {
     }
 
     // Use internal mutability instead?
-    async fn persist<E>(&mut self, event: E) -> Result<E>
+    fn persist<E>(
+        &mut self,
+        event: E,
+    ) -> impl std::future::Future<Output = DomainResult<()>> + Send
     where
-        E: EventDescriptor;
+        E: EventDescriptor + Send + Sync + 'static;
 
     async fn journal(&self) -> impl Iterator<Item = &ExternalRepresentation>;
 }
@@ -42,8 +47,8 @@ pub trait EventDescriptor: Sized {
         &self,
         event_id: UniqueId,
         event_time: SystemTime,
-    ) -> Result<ExternalRepresentation>;
-    fn from_external_representation(external: &ExternalRepresentation) -> Result<Self>;
+    ) -> DomainResult<ExternalRepresentation>;
+    fn from_external_representation(external: &ExternalRepresentation) -> DomainResult<Self>;
 }
 
 #[derive(Clone, Debug)]
@@ -77,7 +82,7 @@ impl Display for ExternalRepresentation {
 pub trait AggregateRoot: Sized {
     type Id: AggregateIdentity;
 
-    fn try_load(stream: AggregateStream) -> Result<Self>;
+    fn try_load(stream: AggregateStream) -> DomainResult<Self>;
 }
 
 pub trait AggregateIdentity {
@@ -89,12 +94,12 @@ pub trait AggregateIdentity {
 pub struct AggregateStream(pub Vec<ExternalRepresentation>);
 
 impl AggregateStream {
-    pub fn peek<E>(&self) -> Result<E>
+    pub fn peek<E>(&self) -> DomainResult<E>
     where
         E: EventDescriptor,
     {
-        Ok(E::from_external_representation(
-            self.0.first().ok_or(anyhow!("expected an event"))?,
-        )?)
+        Ok(E::from_external_representation(self.0.first().ok_or(
+            DomainError::Generic("expected an event".to_owned()),
+        )?)?)
     }
 }

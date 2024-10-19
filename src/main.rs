@@ -1,8 +1,13 @@
-use anyhow::{anyhow, Result};
-use blister::{application::CommandQueryOrchestrator, http};
+use blister::{
+    application::{CommandQueryOrchestrator, EventBus},
+    http,
+    model::{DomainError, DomainResult},
+};
+use serde_json::json;
 use std::fmt::Debug;
 use std::time::SystemTime;
 use tokio::net::TcpListener;
+use uuid::Uuid;
 
 use blister::infrastructure::{EventDescriptor, EventStore, ExternalRepresentation, UniqueId};
 
@@ -14,18 +19,21 @@ struct DummyStore {
 impl DummyStore {}
 
 impl EventStore for DummyStore {
-    async fn find_by_event_id(&self, UniqueId(id): UniqueId) -> Result<ExternalRepresentation> {
+    async fn find_by_event_id(
+        &self,
+        UniqueId(id): UniqueId,
+    ) -> DomainResult<ExternalRepresentation> {
         self.events
             .iter()
             .find(|e| e.id == id)
-            .ok_or(anyhow!("No such event"))
+            .ok_or(DomainError::Generic("No such event".to_owned()))
             .cloned()
     }
 
     async fn find_by_aggregate_id(
         &self,
         UniqueId(id): UniqueId,
-    ) -> Result<Vec<ExternalRepresentation>> {
+    ) -> DomainResult<Vec<ExternalRepresentation>> {
         Ok(self
             .events
             .iter()
@@ -34,9 +42,9 @@ impl EventStore for DummyStore {
             .collect())
     }
 
-    async fn persist<E>(&mut self, event: E) -> Result<E>
+    async fn persist<E>(&mut self, event: E) -> DomainResult<()>
     where
-        E: EventDescriptor,
+        E: EventDescriptor + Send + Sync + 'static,
     {
         let event_id = UniqueId::fresh();
 
@@ -48,7 +56,7 @@ impl EventStore for DummyStore {
         println!("{}", event_rep);
 
         self.events.push(event_rep);
-        Ok(event)
+        Ok(())
     }
 
     async fn journal(&self) -> impl Iterator<Item = &ExternalRepresentation> {
@@ -56,7 +64,7 @@ impl EventStore for DummyStore {
     }
 }
 
-fn make_orchestrator() -> CommandQueryOrchestrator<_> {
+fn make_orchestrator() -> CommandQueryOrchestrator<DummyStore> {
     let store = DummyStore {
         events: vec![ExternalRepresentation {
             id: Uuid::new_v4(),

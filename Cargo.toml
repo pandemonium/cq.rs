@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.89"
 serde = { version = "1.0.210", features = ["derive", "serde_derive"] }
 serde_json = "1.0.128"
 time = { version = "0.3.36", features = [
@@ -22,5 +21,13 @@ tokio = { version = "1.40.0", features = [
     "sync",
 ] }
 uuid = { version = "1.10.0", features = ["rng", "serde", "v4", "v8"] }
-axum = { version = "0.7.7" }
-tracing-subscriber = { version = "0.3.18", features = ["json", "serde", "serde_json", "tracing", "time", "tracing-serde"] }
+axum = { version = "0.7.7", features = ["macros"] }
+tracing-subscriber = { version = "0.3.18", features = [
+    "json",
+    "serde",
+    "serde_json",
+    "tracing",
+    "time",
+    "tracing-serde",
+] }
+thiserror = "1.0.64"

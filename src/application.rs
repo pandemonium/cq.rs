@@ -1,6 +1,4 @@
-use anyhow::Result;
 use std::{
-    cell::RefCell,
     collections::{HashMap, HashSet},
     fmt,
     sync::Arc,
@@ -15,7 +13,10 @@ use tokio::{
 
 use crate::{
     infrastructure::{EventDescriptor, EventStore, UniqueId},
-    model::{AuthorId, AuthorInfo, Book, BookId, BookInfo, Command, Event},
+    model::{
+        Author, AuthorId, AuthorInfo, Book, BookId, BookInfo, Command, DomainError, DomainResult,
+        Event,
+    },
 };
 
 #[derive(Clone)]
@@ -48,7 +49,7 @@ where
     }
 
     async fn start(&self, terminate: TerminationWaiter) -> task::JoinHandle<()> {
-        let mut events = self.event_bus.subscribe();
+        let events = self.event_bus.subscribe();
         let write_model = Arc::clone(&self.write_model);
 
         // Is there a race condition between this and the ReadModel subscriber?
@@ -150,7 +151,7 @@ impl QueryHandler {
         })
     }
 
-    async fn issue<Q>(&self, query: Q) -> Result<Q::Output>
+    async fn issue<Q>(&self, query: Q) -> DomainResult<Q::Output>
     where
         Q: ReadModelQuery,
     {
@@ -188,7 +189,7 @@ where
         }
     }
 
-    pub async fn issue_query<Q>(&self, query: Q) -> Result<Q::Output>
+    pub async fn issue_query<Q>(&self, query: Q) -> DomainResult<Q::Output>
     where
         Q: ReadModelQuery,
     {
@@ -204,6 +205,7 @@ where
 }
 
 // This has to lose the EventStore.
+// But can I make this know about the concrete event type?
 pub struct EventBus<ES, E> {
     event_store: Mutex<ES>,
     tx: Sender<E>,
@@ -222,22 +224,26 @@ where
         }
     }
 
-    async fn replay_journal(&self) -> Result<()> {
+    async fn replay_journal(&self) -> DomainResult<()> {
         println!("Replaying journal");
         for event_repr in self.event_store.lock().await.journal().await {
-            let event = EventDescriptor::from_external_representation(event_repr)?;
+            let event: E = EventDescriptor::from_external_representation(event_repr)?;
 
             println!("Sending {event:?}");
-            self.tx.send(event)?;
+            self.tx
+                .send(event.clone())
+                .map_err(|_| DomainError::Generic(format!("SendError {event:?}")))?;
         }
         Ok(())
     }
 
     // Can I do something here to force a persist to be required before issuing a send?
     // It is not possible to
-    async fn emit(&self, event: E) -> Result<()> {
-        let event = self.event_store.lock().await.persist(event).await?;
-        self.tx.send(event)?;
+    async fn emit(&self, event: E) -> DomainResult<()> {
+        self.event_store.lock().await.persist(event.clone()).await?;
+        self.tx.send(event.clone()).map_err(|_e| {
+            DomainError::Generic(format!("Unable to send {:?} to subscribers", event).to_owned())
+        })?;
         Ok(())
     }
 
@@ -258,7 +264,7 @@ where
         Self { rx: Mutex::new(rx) }
     }
 
-    async fn poll(&self) -> Result<E> {
+    async fn poll(&self) -> DomainResult<E> {
         Ok(self.rx.lock().await.recv().await?)
     }
 }
@@ -269,15 +275,43 @@ pub trait ReadModelQuery {
     fn execute(&self, model: &ReadModel) -> Self::Output;
 }
 
+pub struct QueryAllBooks;
+
+impl ReadModelQuery for QueryAllBooks {
+    type Output = Vec<Book>;
+
+    fn execute(&self, model: &ReadModel) -> Self::Output {
+        model
+            .books
+            .iter()
+            .map(|(id, info)| Book(id.clone(), info.clone()))
+            .collect()
+    }
+}
+
+pub struct QueryAllAuthors;
+
+impl ReadModelQuery for QueryAllAuthors {
+    type Output = Vec<Author>;
+
+    fn execute(&self, model: &ReadModel) -> Self::Output {
+        model
+            .authors
+            .iter()
+            .map(|(id, info)| Author(id.clone(), info.clone()))
+            .collect()
+    }
+}
+
 pub struct QueryBooksByAuthorId(pub AuthorId);
 
 impl ReadModelQuery for QueryBooksByAuthorId {
-    type Output = Result<Vec<Book>>;
+    type Output = Vec<Book>;
 
     fn execute(&self, model: &ReadModel) -> Self::Output {
         let QueryBooksByAuthorId(author_id) = self;
         if let Some(book_ids) = model.books_by_author_id.get(author_id) {
-            Ok(book_ids
+            book_ids
                 .iter()
                 .filter_map(|id| {
                     model
@@ -285,9 +319,9 @@ impl ReadModelQuery for QueryBooksByAuthorId {
                         .get(id)
                         .map(|info| Book(id.clone(), info.clone()))
                 })
-                .collect::<Vec<_>>())
+                .collect::<Vec<_>>()
         } else {
-            Ok(vec![])
+            vec![]
         }
     }
 }
