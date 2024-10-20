@@ -12,25 +12,10 @@ use tokio::{
 };
 
 use crate::{
-    infrastructure::{EventDescriptor, EventStore, UniqueId},
-    model::{
-        Author, AuthorId, AuthorInfo, Book, BookId, BookInfo, Command, DomainError, DomainResult,
-        Event,
-    },
+    error::{Error, Result},
+    infrastructure::{EventDescriptor, EventStore, Termination, TerminationWaiter, UniqueId},
+    model::{Author, AuthorId, AuthorInfo, Book, BookId, BookInfo, Command, Event},
 };
-
-#[derive(Clone)]
-pub struct TerminationWaiter(Arc<Mutex<Receiver<()>>>);
-
-impl TerminationWaiter {
-    fn new(receiver: Receiver<()>) -> Self {
-        Self(Arc::new(Mutex::new(receiver)))
-    }
-
-    async fn wait(&self) {
-        self.0.lock().await.recv().await.expect("wtf")
-    }
-}
 
 struct CommandDispatcher<ES> {
     event_bus: EventBus<ES, Event>,
@@ -82,7 +67,7 @@ where
     async fn accept(&self, command: Command) -> bool {
         match command {
             Command::AddBook(info) => {
-                // Can this be transpanted onto a Book aggregate
+                // Can this be transplanted onto a Book aggregate
                 // type? It would have: create(id) and emit events.
                 // Or does it need to look stuff up so that that
                 // won't work very well?
@@ -151,7 +136,7 @@ impl QueryHandler {
         })
     }
 
-    async fn issue<Q>(&self, query: Q) -> DomainResult<Q::Output>
+    async fn issue<Q>(&self, query: Q) -> Result<Q::Output>
     where
         Q: ReadModelQuery,
     {
@@ -170,7 +155,7 @@ pub struct CommandQueryOrchestrator<ES> {
 
 impl<ES> CommandQueryOrchestrator<ES>
 where
-    ES: EventStore + Send + Sync + Clone + 'static,
+    ES: EventStore,
 {
     pub fn new(event_bus: EventBus<ES, Event>) -> Self {
         let event_subscription = event_bus.subscribe();
@@ -189,7 +174,7 @@ where
         }
     }
 
-    pub async fn issue_query<Q>(&self, query: Q) -> DomainResult<Q::Output>
+    pub async fn issue_query<Q>(&self, query: Q) -> Result<Q::Output>
     where
         Q: ReadModelQuery,
     {
@@ -224,26 +209,29 @@ where
         }
     }
 
-    async fn replay_journal(&self) -> DomainResult<()> {
-        println!("Replaying journal");
+    async fn replay_journal(&self) -> Result<()> {
         for event_repr in self.event_store.lock().await.journal().await {
             let event: E = EventDescriptor::from_external_representation(event_repr)?;
 
-            println!("Sending {event:?}");
             self.tx
                 .send(event.clone())
-                .map_err(|_| DomainError::Generic(format!("SendError {event:?}")))?;
+                .map_err(|_| Error::Generic(format!("SendError {event:?}")))?;
         }
         Ok(())
     }
 
     // Can I do something here to force a persist to be required before issuing a send?
     // It is not possible to
-    async fn emit(&self, event: E) -> DomainResult<()> {
-        self.event_store.lock().await.persist(event.clone()).await?;
-        self.tx.send(event.clone()).map_err(|_e| {
-            DomainError::Generic(format!("Unable to send {:?} to subscribers", event).to_owned())
-        })?;
+    async fn emit(&self, event: E) -> Result<()> {
+        let mut store = self.event_store.lock().await;
+        store.persist(event.clone()).await?;
+
+        self.tx
+            .send(event)
+            .map_err(|broadcast::error::SendError(event)| {
+                Error::Generic(format!("Unable to send {:?} to subscribers", event).to_owned())
+            })?;
+
         Ok(())
     }
 
@@ -258,13 +246,13 @@ struct EventBusSubscription<E> {
 
 impl<E> EventBusSubscription<E>
 where
-    E: EventDescriptor + Sync + Send + Clone + 'static,
+    E: EventDescriptor + Clone,
 {
     fn new(rx: Receiver<E>) -> Self {
         Self { rx: Mutex::new(rx) }
     }
 
-    async fn poll(&self) -> DomainResult<E> {
+    async fn poll(&self) -> Result<E> {
         Ok(self.rx.lock().await.recv().await?)
     }
 }
@@ -372,25 +360,5 @@ impl WriteModel {
                 self.author_ids.insert(id);
             }
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct Termination {
-    signal: Sender<()>,
-}
-
-impl Termination {
-    pub fn new() -> Self {
-        let (signal, _rx) = broadcast::channel(1);
-        Self { signal }
-    }
-
-    pub fn waiter(&self) -> TerminationWaiter {
-        TerminationWaiter::new(self.signal.subscribe())
-    }
-
-    pub fn signal(&self) {
-        self.signal.send(()).expect("msg");
     }
 }

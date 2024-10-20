@@ -2,15 +2,51 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::{
     fmt::{self, Display},
+    future::Future,
+    sync::Arc,
     time::SystemTime,
 };
 use time::OffsetDateTime;
+use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
-use crate::model::{DomainError, DomainResult};
+use crate::error::{Error, Result};
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UniqueId(pub Uuid);
+
+#[derive(Clone)]
+pub struct Termination {
+    signal: broadcast::Sender<()>,
+}
+
+impl Termination {
+    pub fn new() -> Self {
+        let (signal, _rx) = broadcast::channel(1);
+        Self { signal }
+    }
+
+    pub fn waiter(&self) -> TerminationWaiter {
+        TerminationWaiter::new(self.signal.subscribe())
+    }
+
+    pub fn signal(&self) {
+        self.signal.send(()).expect("msg");
+    }
+}
+
+#[derive(Clone)]
+pub struct TerminationWaiter(Arc<Mutex<broadcast::Receiver<()>>>);
+
+impl TerminationWaiter {
+    fn new(receiver: broadcast::Receiver<()>) -> Self {
+        Self(Arc::new(Mutex::new(receiver)))
+    }
+
+    pub async fn wait(&self) {
+        self.0.lock().await.recv().await.expect("wtf")
+    }
+}
 
 impl UniqueId {
     pub fn fresh() -> Self {
@@ -19,11 +55,10 @@ impl UniqueId {
 }
 
 pub trait EventStore {
-    async fn find_by_event_id(&self, id: UniqueId) -> DomainResult<ExternalRepresentation>;
-    async fn find_by_aggregate_id(&self, id: UniqueId)
-        -> DomainResult<Vec<ExternalRepresentation>>;
+    async fn find_by_event_id(&self, id: UniqueId) -> Result<ExternalRepresentation>;
+    async fn find_by_aggregate_id(&self, id: UniqueId) -> Result<Vec<ExternalRepresentation>>;
 
-    async fn load_aggregate<Aggregate>(&self, aggregate: Aggregate) -> DomainResult<Aggregate::Root>
+    async fn load_aggregate<Aggregate>(&self, aggregate: Aggregate) -> Result<Aggregate::Root>
     where
         Aggregate: AggregateIdentity,
     {
@@ -32,10 +67,10 @@ pub trait EventStore {
     }
 
     // Use internal mutability instead?
-    fn persist<E>(
-        &mut self,
-        event: E,
-    ) -> impl std::future::Future<Output = DomainResult<()>> + Send
+    // This function has to be this way because the Future has to be Send
+    // I wonder if this is something I can solve some other way because this
+    // is not pretty. I must be doing something wrong.
+    fn persist<E>(&mut self, event: E) -> impl Future<Output = Result<()>> + Send
     where
         E: EventDescriptor + Send + Sync + 'static;
 
@@ -47,8 +82,8 @@ pub trait EventDescriptor: Sized {
         &self,
         event_id: UniqueId,
         event_time: SystemTime,
-    ) -> DomainResult<ExternalRepresentation>;
-    fn from_external_representation(external: &ExternalRepresentation) -> DomainResult<Self>;
+    ) -> Result<ExternalRepresentation>;
+    fn from_external_representation(external: &ExternalRepresentation) -> Result<Self>;
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +117,7 @@ impl Display for ExternalRepresentation {
 pub trait AggregateRoot: Sized {
     type Id: AggregateIdentity;
 
-    fn try_load(stream: AggregateStream) -> DomainResult<Self>;
+    fn try_load(stream: AggregateStream) -> Result<Self>;
 }
 
 pub trait AggregateIdentity {
@@ -94,12 +129,14 @@ pub trait AggregateIdentity {
 pub struct AggregateStream(pub Vec<ExternalRepresentation>);
 
 impl AggregateStream {
-    pub fn peek<E>(&self) -> DomainResult<E>
+    pub fn peek<E>(&self) -> Result<E>
     where
         E: EventDescriptor,
     {
-        Ok(E::from_external_representation(self.0.first().ok_or(
-            DomainError::Generic("expected an event".to_owned()),
-        )?)?)
+        Ok(E::from_external_representation(
+            self.0
+                .first()
+                .ok_or(Error::Generic("expected an event".to_owned()))?,
+        )?)
     }
 }

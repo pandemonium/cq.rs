@@ -4,13 +4,14 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use std::sync::Arc;
+use std::{result::Result as StdResult, sync::Arc};
 use tokio::net::TcpListener;
 
 use crate::{
-    application::CommandQueryOrchestrator,
+    core::CommandQueryOrchestrator,
+    error::{Error, Result},
     infrastructure::EventStore,
-    model::{self as domain, DomainError, DomainResult},
+    model::{self as domain},
 };
 
 // This thing needs a model into and from which
@@ -56,6 +57,8 @@ mod model {
     pub struct NewAuthor(pub domain::AuthorInfo);
 }
 
+type ApiResult<A> = StdResult<A, ApiError>;
+
 type Orchestrator<ES> = Arc<CommandQueryOrchestrator<ES>>;
 pub struct Api<ES>(Orchestrator<ES>);
 
@@ -67,7 +70,7 @@ where
         Self(Arc::new(orchestrator))
     }
 
-    pub async fn start(self, listener: TcpListener) -> DomainResult<()> {
+    pub async fn start(self, listener: TcpListener) -> Result<()> {
         let Self(orchestrator) = self;
         let routes = routing_configuration().with_state(orchestrator);
         Ok(axum::serve(listener, routes).await?)
@@ -95,10 +98,10 @@ where
         .nest("/api/v1", api_routes)
 }
 
-struct ApiError(DomainError);
+struct ApiError(Error);
 
-impl From<DomainError> for ApiError {
-    fn from(value: DomainError) -> Self {
+impl From<Error> for ApiError {
+    fn from(value: Error) -> Self {
         Self(value)
     }
 }
@@ -112,14 +115,14 @@ impl IntoResponse for ApiError {
 
 mod books {
     use super::*;
-    use crate::{application::QueryAllBooks, model::Command};
+    use crate::{core::QueryAllBooks, model::Command};
     use axum::{http::StatusCode, Json};
 
     pub async fn list<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
-    ) -> Result<Json<Vec<model::Book>>, ApiError>
+    ) -> ApiResult<Json<Vec<model::Book>>>
     where
-        ES: EventStore + Send + Sync + Clone + 'static,
+        ES: EventStore + Clone + 'static,
     {
         Ok(Json(
             orchestrator
@@ -134,9 +137,9 @@ mod books {
     pub async fn create<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
         Json(model::NewBook(book)): Json<model::NewBook>,
-    ) -> Result<StatusCode, ApiError>
+    ) -> ApiResult<StatusCode>
     where
-        ES: EventStore + Send + Sync + Clone + 'static,
+        ES: EventStore + Clone + 'static,
     {
         orchestrator.submit_command(Command::AddBook(book)).await;
         Ok(StatusCode::CREATED)
@@ -145,14 +148,14 @@ mod books {
 
 mod authors {
     use super::*;
-    use crate::{application::QueryAllAuthors, model::Command};
+    use crate::{core::QueryAllAuthors, model::Command};
     use axum::{http::StatusCode, Json};
 
     pub async fn list<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
-    ) -> Result<Json<Vec<model::Author>>, ApiError>
+    ) -> ApiResult<Json<Vec<model::Author>>>
     where
-        ES: EventStore + Send + Sync + Clone + 'static,
+        ES: EventStore + Clone + 'static,
     {
         Ok(Json(
             orchestrator
@@ -167,9 +170,9 @@ mod authors {
     pub async fn create<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
         Json(model::NewAuthor(author)): Json<model::NewAuthor>,
-    ) -> Result<StatusCode, ApiError>
+    ) -> ApiResult<StatusCode>
     where
-        ES: EventStore + Send + Sync + Clone + 'static,
+        ES: EventStore + Clone + 'static,
     {
         orchestrator
             .submit_command(Command::AddAuthor(author))
@@ -178,7 +181,7 @@ mod authors {
     }
 }
 
-async fn system_root<ES>(State(_orchestrator): State<Orchestrator<ES>>) -> Result<String, ApiError>
+async fn system_root<ES>(State(_orchestrator): State<Orchestrator<ES>>) -> ApiResult<String>
 where
     ES: EventStore + Send + Sync + Clone + 'static,
 {

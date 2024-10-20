@@ -1,35 +1,13 @@
 use serde::{Deserialize, Serialize};
-use std::{io, time::SystemTime};
-use thiserror::Error;
-use tokio::sync::broadcast::error::RecvError;
+use std::time::SystemTime;
 
-use crate::infrastructure::{
-    AggregateIdentity, AggregateRoot, AggregateStream, EventDescriptor, ExternalRepresentation,
-    UniqueId,
+use crate::{
+    error::{Error, Result},
+    infrastructure::{
+        AggregateIdentity, AggregateRoot, AggregateStream, EventDescriptor, ExternalRepresentation,
+        UniqueId,
+    },
 };
-
-#[derive(Error, Debug)]
-pub enum DomainError {
-    #[error("Failed to marshall json data {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("Unknown event-type `{0}`")]
-    UnknownEventType(String),
-
-    #[error("Failed to parse event data {0}")]
-    AggregateParseError(String),
-
-    #[error("IO error {0}")]
-    IoError(#[from] io::Error),
-
-    #[error("Error receving an event {0}")]
-    ReceiveError(#[from] RecvError),
-
-    #[error("Generic error {0}")]
-    Generic(String),
-}
-
-pub type DomainResult<A> = std::result::Result<A, DomainError>;
 
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -54,7 +32,7 @@ impl EventDescriptor for Event {
         &self,
         UniqueId(id): UniqueId,
         when: SystemTime,
-    ) -> DomainResult<ExternalRepresentation> {
+    ) -> Result<ExternalRepresentation> {
         match self {
             Event::BookAdded(BookId(UniqueId(aggregate_id)), info) => Ok(ExternalRepresentation {
                 id,
@@ -82,7 +60,7 @@ impl EventDescriptor for Event {
             data,
             ..
         }: &ExternalRepresentation,
-    ) -> DomainResult<Self> {
+    ) -> Result<Self> {
         match what.as_str() {
             Event::AUTHOR_ADDED => Ok(Event::AuthorAdded(
                 AuthorId(UniqueId(*aggregate_id)),
@@ -92,7 +70,7 @@ impl EventDescriptor for Event {
                 BookId(UniqueId(*aggregate_id)),
                 serde_json::from_value(data.clone())?,
             )),
-            otherwise => Err(DomainError::UnknownEventType(otherwise.to_owned())),
+            otherwise => Err(Error::UnknownEventType(otherwise.to_owned())),
         }
     }
 }
@@ -132,11 +110,11 @@ pub struct AuthorId(pub UniqueId);
 impl AggregateRoot for Author {
     type Id = AuthorId;
 
-    fn try_load(stream: AggregateStream) -> DomainResult<Self> {
+    fn try_load(stream: AggregateStream) -> Result<Self> {
         if let Event::AuthorAdded(id, info) = stream.peek()? {
             Ok(Author(id, info))
         } else {
-            Err(DomainError::AggregateParseError(
+            Err(Error::AggregateParseError(
                 "expected an AuthorAdded".to_owned(),
             ))
         }
@@ -158,12 +136,12 @@ pub struct BookId(pub UniqueId);
 impl AggregateRoot for Book {
     type Id = BookId;
 
-    fn try_load(stream: AggregateStream) -> DomainResult<Self> {
+    fn try_load(stream: AggregateStream) -> Result<Self> {
         // This can be simplified
         if let Event::BookAdded(id, info) = stream.peek()? {
             Ok(Book(id, info))
         } else {
-            Err(DomainError::AggregateParseError(
+            Err(Error::AggregateParseError(
                 "Expected a BookAdded".to_owned(),
             ))
         }

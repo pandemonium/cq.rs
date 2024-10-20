@@ -1,15 +1,15 @@
-use blister::{
-    application::{CommandQueryOrchestrator, EventBus},
-    http,
-    model::{DomainError, DomainResult},
-};
 use serde_json::json;
 use std::fmt::Debug;
 use std::time::SystemTime;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
-use blister::infrastructure::{EventDescriptor, EventStore, ExternalRepresentation, UniqueId};
+use blister::{
+    core::{CommandQueryOrchestrator, EventBus},
+    error::{Error, Result},
+    http,
+    infrastructure::{EventDescriptor, EventStore, ExternalRepresentation, Termination, UniqueId},
+};
 
 #[derive(Clone, Debug, Default)]
 struct DummyStore {
@@ -19,21 +19,18 @@ struct DummyStore {
 impl DummyStore {}
 
 impl EventStore for DummyStore {
-    async fn find_by_event_id(
-        &self,
-        UniqueId(id): UniqueId,
-    ) -> DomainResult<ExternalRepresentation> {
+    async fn find_by_event_id(&self, UniqueId(id): UniqueId) -> Result<ExternalRepresentation> {
         self.events
             .iter()
             .find(|e| e.id == id)
-            .ok_or(DomainError::Generic("No such event".to_owned()))
+            .ok_or(Error::Generic("No such event".to_owned()))
             .cloned()
     }
 
     async fn find_by_aggregate_id(
         &self,
         UniqueId(id): UniqueId,
-    ) -> DomainResult<Vec<ExternalRepresentation>> {
+    ) -> Result<Vec<ExternalRepresentation>> {
         Ok(self
             .events
             .iter()
@@ -42,7 +39,7 @@ impl EventStore for DummyStore {
             .collect())
     }
 
-    async fn persist<E>(&mut self, event: E) -> DomainResult<()>
+    async fn persist<E>(&mut self, event: E) -> Result<()>
     where
         E: EventDescriptor + Send + Sync + 'static,
     {
@@ -86,8 +83,15 @@ async fn main() {
         .await
         .expect("a free port");
 
-    http::Api::new(make_orchestrator())
+    let orchestrator = make_orchestrator();
+
+    let terminator = Termination::new();
+    orchestrator.start(&terminator).await;
+
+    http::Api::new(orchestrator)
         .start(listener)
         .await
-        .expect("msg");
+        .expect("starting the API to work");
+
+    terminator.signal();
 }
