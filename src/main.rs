@@ -50,8 +50,6 @@ impl EventStore for DummyStore {
         let timestamp = SystemTime::now();
 
         let event_rep = event.external_representation(event_id, timestamp)?;
-        println!("{}", event_rep);
-
         self.events.push(event_rep);
         Ok(())
     }

@@ -1,5 +1,6 @@
 use axum::{
     extract::State,
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
@@ -14,48 +15,7 @@ use crate::{
     model::{self as domain},
 };
 
-// This thing needs a model into and from which
-// the domain types can be mapped
-mod model {
-    use super::*;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Serialize, Deserialize)]
-    pub struct Author {
-        id: domain::AuthorId,
-        info: domain::AuthorInfo,
-    }
-
-    impl From<domain::Author> for Author {
-        fn from(domain::Author(id, info): domain::Author) -> Self {
-            Self { id, info }
-        }
-    }
-
-    impl From<Author> for domain::Author {
-        fn from(Author { id, info }: Author) -> Self {
-            Self(id, info)
-        }
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct Book {
-        id: domain::BookId,
-        info: domain::BookInfo,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct NewBook(pub domain::BookInfo);
-
-    impl From<domain::Book> for Book {
-        fn from(domain::Book(id, info): domain::Book) -> Self {
-            Self { id, info }
-        }
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct NewAuthor(pub domain::AuthorInfo);
-}
+pub mod model;
 
 type ApiResult<A> = StdResult<A, ApiError>;
 
@@ -83,7 +43,8 @@ where
 {
     let book_routes = Router::new()
         .route("/", get(books::list))
-        .route("/", post(books::create));
+        .route("/", post(books::create))
+        .route("/:id", get(books::get));
 
     let author_routes = Router::new()
         .route("/", get(authors::list))
@@ -98,25 +59,54 @@ where
         .nest("/api/v1", api_routes)
 }
 
-struct ApiError(Error);
+enum ApiError {
+    Internal(Error),
+    ServiceStatus(StatusCode),
+}
+
+impl ApiError {
+    fn not_found<A>() -> ApiResult<A> {
+        Err(ApiError::ServiceStatus(StatusCode::NOT_FOUND))
+    }
+}
 
 impl From<Error> for ApiError {
     fn from(value: Error) -> Self {
-        Self(value)
+        Self::Internal(value)
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let ApiError(inner) = self;
-        format!("{}", inner).into_response()
+        match self {
+            ApiError::Internal(error) => format!("{error}").into_response(),
+            ApiError::ServiceStatus(status) => status.into_response(),
+        }
     }
 }
 
 mod books {
     use super::*;
-    use crate::{core::QueryAllBooks, model::Command};
-    use axum::{http::StatusCode, Json};
+    use axum::{extract::Path, http::StatusCode, Json};
+
+    use domain::{
+        query::{QueryAllBooks, QueryBookById},
+        BookId, Command,
+    };
+
+    pub async fn get<ES>(
+        State(orchestrator): State<Orchestrator<ES>>,
+        Path(book_id): Path<BookId>,
+    ) -> ApiResult<Json<model::Book>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        if let Some(book) = orchestrator.issue_query(QueryBookById(book_id)).await? {
+            Ok(Json(book.into()))
+        } else {
+            ApiError::not_found()
+        }
+    }
 
     pub async fn list<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
@@ -134,6 +124,7 @@ mod books {
         ))
     }
 
+    // return a URI to the created resource
     pub async fn create<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
         Json(model::NewBook(book)): Json<model::NewBook>,
@@ -141,15 +132,19 @@ mod books {
     where
         ES: EventStore + Clone + 'static,
     {
-        orchestrator.submit_command(Command::AddBook(book)).await;
-        Ok(StatusCode::CREATED)
+        if orchestrator.submit_command(Command::AddBook(book)).await {
+            Ok(StatusCode::CREATED)
+        } else {
+            Ok(StatusCode::NOT_ACCEPTABLE)
+        }
     }
 }
 
 mod authors {
     use super::*;
-    use crate::{core::QueryAllAuthors, model::Command};
     use axum::{http::StatusCode, Json};
+
+    use domain::{query::QueryAllAuthors, Command};
 
     pub async fn list<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
@@ -167,6 +162,7 @@ mod authors {
         ))
     }
 
+    // return a URI to the created resource
     pub async fn create<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
         Json(model::NewAuthor(author)): Json<model::NewAuthor>,

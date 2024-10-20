@@ -87,8 +87,6 @@ pub enum Command {
     AddAuthor(AuthorInfo),
 }
 
-//pub struct AuthorById(AuthorId);
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BookInfo {
     pub isbn: Isbn,
@@ -154,5 +152,106 @@ impl AggregateIdentity for BookId {
     fn id(&self) -> &UniqueId {
         let BookId(id) = self;
         id
+    }
+}
+
+pub mod query {
+    use std::collections::HashMap;
+
+    use crate::model::{Author, AuthorId, AuthorInfo, Book, BookId, BookInfo, Event};
+
+    #[derive(Debug, Default)]
+    pub struct IndexSet {
+        authors: HashMap<AuthorId, AuthorInfo>,
+        books: HashMap<BookId, BookInfo>,
+        books_by_author_id: HashMap<AuthorId, Vec<BookId>>,
+    }
+
+    impl IndexSet {
+        pub fn apply(&mut self, event: Event) {
+            match event {
+                Event::BookAdded(id, info) => {
+                    self.books.insert(id.clone(), info.clone());
+                    self.books_by_author_id
+                        .entry(info.author)
+                        .or_default()
+                        .push(id);
+                }
+                Event::AuthorAdded(id, info) => {
+                    self.authors.insert(id, info);
+                }
+            }
+        }
+    }
+
+    pub trait IndexSetQuery {
+        type Output;
+
+        fn execute(&self, model: &IndexSet) -> Self::Output;
+    }
+
+    pub struct QueryAllBooks;
+
+    impl IndexSetQuery for QueryAllBooks {
+        type Output = Vec<Book>;
+
+        fn execute(&self, model: &IndexSet) -> Self::Output {
+            model
+                .books
+                .iter()
+                .map(|(id, info)| Book(id.clone(), info.clone()))
+                .collect()
+        }
+    }
+
+    pub struct QueryBookById(pub BookId);
+
+    impl IndexSetQuery for QueryBookById {
+        type Output = Option<Book>;
+
+        fn execute(&self, model: &IndexSet) -> Self::Output {
+            let QueryBookById(id) = self;
+            model
+                .books
+                .get(id)
+                .map(|info| Book(id.clone(), info.clone()))
+        }
+    }
+
+    pub struct QueryAllAuthors;
+
+    impl IndexSetQuery for QueryAllAuthors {
+        type Output = Vec<Author>;
+
+        fn execute(&self, model: &IndexSet) -> Self::Output {
+            model
+                .authors
+                .iter()
+                .map(|(id, info)| Author(id.clone(), info.clone()))
+                .collect()
+        }
+    }
+
+    pub struct QueryBooksByAuthorId(pub AuthorId);
+
+    impl IndexSetQuery for QueryBooksByAuthorId {
+        type Output = Vec<Book>;
+
+        fn execute(&self, model: &IndexSet) -> Self::Output {
+            let QueryBooksByAuthorId(author_id) = self;
+            if let Some(book_ids) = model.books_by_author_id.get(author_id) {
+                book_ids
+                    .iter()
+                    .filter_map(|id| {
+                        model
+                            .books
+                            .get(id)
+                            .map(|info| Book(id.clone(), info.clone()))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![]
+            }
+        }
     }
 }

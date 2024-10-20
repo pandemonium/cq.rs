@@ -14,7 +14,10 @@ use tokio::{
 use crate::{
     error::{Error, Result},
     infrastructure::{EventDescriptor, EventStore, Termination, TerminationWaiter, UniqueId},
-    model::{Author, AuthorId, AuthorInfo, Book, BookId, BookInfo, Command, Event},
+    model::{
+        query::{IndexSet, IndexSetQuery},
+        AuthorId, BookId, Command, Event,
+    },
 };
 
 struct CommandDispatcher<ES> {
@@ -101,32 +104,31 @@ where
 }
 
 struct QueryHandler {
-    read_model: Arc<RwLock<ReadModel>>,
-    events: Arc<EventBusSubscription<Event>>,
+    read_model: Arc<RwLock<IndexSet>>,
+    event_source: Arc<EventBusSubscription<Event>>,
 }
 
 impl QueryHandler {
     fn new(subscription: EventBusSubscription<Event>) -> Self {
         Self {
             read_model: Default::default(),
-            events: Arc::new(subscription),
+            event_source: Arc::new(subscription),
         }
     }
 
     fn start(&self, termination: TerminationWaiter) -> task::JoinHandle<()> {
         let read_model = Arc::clone(&self.read_model);
-        let events = Arc::clone(&self.events);
+        let event_source = Arc::clone(&self.event_source);
 
         task::spawn(async move {
             loop {
                 tokio::select! {
                     // is it necessary to have this wrapper? It looks better
                     // but causes a Mutex
-                    event = events.poll() => {
+                    event = event_source.poll() => {
                         if let Ok(event) = event {
                             read_model.write().await.apply(event)
                         } else {
-                            // log(event.error)
                             break
                         }
                     }
@@ -138,12 +140,9 @@ impl QueryHandler {
 
     async fn issue<Q>(&self, query: Q) -> Result<Q::Output>
     where
-        Q: ReadModelQuery,
+        Q: IndexSetQuery,
     {
         let read_model = self.read_model.read().await;
-
-        println!("{read_model:?}");
-
         Ok(query.execute(&read_model))
     }
 }
@@ -176,16 +175,14 @@ where
 
     pub async fn issue_query<Q>(&self, query: Q) -> Result<Q::Output>
     where
-        Q: ReadModelQuery,
+        Q: IndexSetQuery,
     {
         self.query_handler.issue(query).await
     }
 
-    // This belongs in the Command Dispatcher which has a WriteModel
-    // ReadModel belongs in the Query Handler
-    // They both need to subscribe to events emitted.
-    pub async fn submit_command(&self, command: Command) {
-        self.command_dispatcher.accept(command).await;
+    // Should be Result<(), ValidationError>
+    pub async fn submit_command(&self, command: Command) -> bool {
+        self.command_dispatcher.accept(command).await
     }
 }
 
@@ -254,88 +251,6 @@ where
 
     async fn poll(&self) -> Result<E> {
         Ok(self.rx.lock().await.recv().await?)
-    }
-}
-
-pub trait ReadModelQuery {
-    type Output;
-
-    fn execute(&self, model: &ReadModel) -> Self::Output;
-}
-
-pub struct QueryAllBooks;
-
-impl ReadModelQuery for QueryAllBooks {
-    type Output = Vec<Book>;
-
-    fn execute(&self, model: &ReadModel) -> Self::Output {
-        model
-            .books
-            .iter()
-            .map(|(id, info)| Book(id.clone(), info.clone()))
-            .collect()
-    }
-}
-
-pub struct QueryAllAuthors;
-
-impl ReadModelQuery for QueryAllAuthors {
-    type Output = Vec<Author>;
-
-    fn execute(&self, model: &ReadModel) -> Self::Output {
-        model
-            .authors
-            .iter()
-            .map(|(id, info)| Author(id.clone(), info.clone()))
-            .collect()
-    }
-}
-
-pub struct QueryBooksByAuthorId(pub AuthorId);
-
-impl ReadModelQuery for QueryBooksByAuthorId {
-    type Output = Vec<Book>;
-
-    fn execute(&self, model: &ReadModel) -> Self::Output {
-        let QueryBooksByAuthorId(author_id) = self;
-        if let Some(book_ids) = model.books_by_author_id.get(author_id) {
-            book_ids
-                .iter()
-                .filter_map(|id| {
-                    model
-                        .books
-                        .get(id)
-                        .map(|info| Book(id.clone(), info.clone()))
-                })
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct ReadModel {
-    authors: HashMap<AuthorId, AuthorInfo>,
-    books: HashMap<BookId, BookInfo>,
-    books_by_author_id: HashMap<AuthorId, Vec<BookId>>,
-}
-
-impl ReadModel {
-    fn apply(&mut self, event: Event) {
-        println!("Apply {event:?}");
-        match event {
-            Event::BookAdded(id, info) => {
-                self.books.insert(id.clone(), info.clone());
-                self.books_by_author_id
-                    .entry(info.author)
-                    .or_default()
-                    .push(id);
-            }
-            Event::AuthorAdded(id, info) => {
-                self.authors.insert(id, info);
-            }
-        }
     }
 }
 
