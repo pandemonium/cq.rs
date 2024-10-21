@@ -12,8 +12,17 @@ use uuid::Uuid;
 
 use crate::error::{Error, Result};
 
+pub mod persistence;
+
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UniqueId(pub Uuid);
+
+impl Display for UniqueId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let UniqueId(id) = self;
+        write!(f, "{id}")
+    }
+}
 
 #[derive(Clone)]
 pub struct Termination {
@@ -86,7 +95,7 @@ pub trait EventDescriptor: Sized {
     fn from_external_representation(external: &ExternalRepresentation) -> Result<Self>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExternalRepresentation {
     pub id: Uuid,
     pub when: SystemTime,

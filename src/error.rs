@@ -22,6 +22,9 @@ pub enum Error {
 
     #[error("Generic error {0}")]
     Generic(String),
+
+    #[error("Fjall persistence error {0}")]
+    EventArchive(#[from] fjall::Error),
 }
 
 pub type Result<A> = std::result::Result<A, Error>;
