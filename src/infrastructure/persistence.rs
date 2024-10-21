@@ -1,6 +1,4 @@
-use std::io::Read;
-
-use fjall::*;
+use fjall::{Keyspace, PartitionCreateOptions, PartitionHandle, PersistMode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -28,18 +26,26 @@ impl<'a> AsRef<[u8]> for AggregateKey<'a> {
 }
 
 impl ArchivedRepresentation {
-    fn key(&self) -> Key {
+    fn event_id(&self) -> Key {
         let Self(ExternalRepresentation { id, .. }) = self;
         Key(id)
     }
 
-    fn aggregate_key(&self) -> AggregateKey {
+    fn aggregate_id(&self) -> AggregateKey {
         let Self(ExternalRepresentation { aggregate_id, .. }) = self;
         AggregateKey(aggregate_id)
     }
 
-    fn json(&self) -> error::Result<String> {
-        Ok(serde_json::to_string(self)?)
+    fn as_json(&self) -> error::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    fn from_slice(bytes: &[u8]) -> error::Result<Self> {
+        Ok(Self(serde_json::from_slice(bytes)?))
+    }
+
+    fn into_external_representation(self) -> ExternalRepresentation {
+        self.0
     }
 }
 
@@ -68,22 +74,24 @@ impl EventArchive {
         })
     }
 
-    // some of these things might be blocking - what does that mean?
-    async fn insert(&self, event: ExternalRepresentation) -> error::Result<()> {
-        let event: ArchivedRepresentation = event.into();
-        let key = event.key();
-
+    fn insert(&self, event: ExternalRepresentation) -> error::Result<()> {
         let mut batch = self.keyspace.batch();
 
-        batch.insert(&self.events, &key, event.json()?);
-        batch.insert(&self.aggregates, event.aggregate_key(), key);
+        let archived: ArchivedRepresentation = event.into();
+        let primary_key = archived.event_id();
+
+        batch.insert(&self.events, &primary_key, archived.as_json()?);
+        batch.insert(&self.aggregates, archived.aggregate_id(), primary_key);
 
         batch.commit()?;
+
+        // Yes, no, maybe?
+        self.keyspace.persist(PersistMode::SyncAll)?;
 
         Ok(())
     }
 
-    async fn find_aggregate_events<'a>(
+    fn find_aggregate_events<'a>(
         &self,
         aggregate_id: AggregateKey<'a>,
     ) -> error::Result<Vec<ExternalRepresentation>> {
@@ -97,10 +105,20 @@ impl EventArchive {
                 panic!("corrupt index")
             };
 
-            events.push(serde_json::from_slice(&event_bytes)?);
+            let archived = ArchivedRepresentation::from_slice(&event_bytes)?;
+            events.push(archived.into_external_representation());
         }
 
         Ok(events)
+    }
+
+    fn find_event<'a>(&self, event_id: Key<'a>) -> error::Result<Option<ExternalRepresentation>> {
+        if let Some(event_bytes) = self.events.get(&event_id)? {
+            let archived = ArchivedRepresentation::from_slice(&event_bytes)?;
+            Ok(Some(archived.into_external_representation()))
+        } else {
+            Ok(None)
+        }
     }
 }
 
