@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::model as domain;
+use crate::core::model as domain;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthorId(pub domain::AuthorId);
 
 #[derive(Serialize, Deserialize)]
 pub struct Author {
@@ -19,6 +22,9 @@ impl From<Author> for domain::Author {
         Self(id, info)
     }
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BookId(pub domain::BookId);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Book {

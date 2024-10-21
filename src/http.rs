@@ -9,10 +9,12 @@ use std::{result::Result as StdResult, sync::Arc};
 use tokio::net::TcpListener;
 
 use crate::{
-    core::CommandQueryOrchestrator,
+    core::{
+        model::{self as domain},
+        CommandQueryOrchestrator,
+    },
     error::{Error, Result},
     infrastructure::EventStore,
-    model::{self as domain},
 };
 
 pub mod model;
@@ -41,22 +43,23 @@ fn routing_configuration<ES>() -> Router<Orchestrator<ES>>
 where
     ES: EventStore + Send + Sync + Clone + 'static,
 {
-    let book_routes = Router::new()
+    let books = Router::new()
         .route("/", get(books::list))
         .route("/", post(books::create))
         .route("/:id", get(books::get));
 
-    let author_routes = Router::new()
+    let authors = Router::new()
         .route("/", get(authors::list))
-        .route("/", post(authors::create));
+        .route("/", post(authors::create))
+        .route("/:id", get(authors::get));
 
-    let api_routes = Router::new()
-        .nest("/books", book_routes)
-        .nest("/authors", author_routes);
+    let api = Router::new()
+        .nest("/books", books)
+        .nest("/authors", authors);
 
     Router::new()
         .route("/", get(system_root))
-        .nest("/api/v1", api_routes)
+        .nest("/api/v1", api)
 }
 
 enum ApiError {
@@ -89,19 +92,16 @@ mod books {
     use super::*;
     use axum::{extract::Path, http::StatusCode, Json};
 
-    use domain::{
-        query::{QueryAllBooks, QueryBookById},
-        BookId, Command,
-    };
+    use domain::{query, Command};
 
     pub async fn get<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
-        Path(book_id): Path<BookId>,
+        Path(model::BookId(book_id)): Path<model::BookId>,
     ) -> ApiResult<Json<model::Book>>
     where
         ES: EventStore + Clone + 'static,
     {
-        if let Some(book) = orchestrator.issue_query(QueryBookById(book_id)).await? {
+        if let Some(book) = orchestrator.issue_query(query::BookById(book_id)).await? {
             Ok(Json(book.into()))
         } else {
             ApiError::not_found()
@@ -116,7 +116,7 @@ mod books {
     {
         Ok(Json(
             orchestrator
-                .issue_query(QueryAllBooks)
+                .issue_query(query::AllBooks)
                 .await?
                 .into_iter()
                 .map(|b| b.into())
@@ -142,9 +142,23 @@ mod books {
 
 mod authors {
     use super::*;
-    use axum::{http::StatusCode, Json};
+    use axum::{extract::Path, http::StatusCode, Json};
 
-    use domain::{query::QueryAllAuthors, Command};
+    use domain::{query, Command};
+
+    pub async fn get<ES>(
+        State(orchestrator): State<Orchestrator<ES>>,
+        Path(model::BookId(book_id)): Path<model::BookId>,
+    ) -> ApiResult<Json<model::Book>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        if let Some(book) = orchestrator.issue_query(query::BookById(book_id)).await? {
+            Ok(Json(book.into()))
+        } else {
+            ApiError::not_found()
+        }
+    }
 
     pub async fn list<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
@@ -154,7 +168,7 @@ mod authors {
     {
         Ok(Json(
             orchestrator
-                .issue_query(QueryAllAuthors)
+                .issue_query(query::AllAuthors)
                 .await?
                 .into_iter()
                 .map(|b| b.into())

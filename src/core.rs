@@ -14,11 +14,10 @@ use tokio::{
 use crate::{
     error::{Error, Result},
     infrastructure::{EventDescriptor, EventStore, Termination, TerminationWaiter, UniqueId},
-    model::{
-        query::{IndexSet, IndexSetQuery},
-        AuthorId, BookId, Command, Event,
-    },
 };
+use model::{query, AuthorId, BookId, Command, Event};
+
+pub mod model;
 
 struct CommandDispatcher<ES> {
     event_bus: EventBus<ES, Event>,
@@ -104,7 +103,7 @@ where
 }
 
 struct QueryHandler {
-    read_model: Arc<RwLock<IndexSet>>,
+    read_model: Arc<RwLock<query::IndexSet>>,
     event_source: Arc<EventBusSubscription<Event>>,
 }
 
@@ -140,7 +139,7 @@ impl QueryHandler {
 
     async fn issue<Q>(&self, query: Q) -> Result<Q::Output>
     where
-        Q: IndexSetQuery,
+        Q: query::IndexSetQuery,
     {
         let read_model = self.read_model.read().await;
         Ok(query.execute(&read_model))
@@ -175,7 +174,7 @@ where
 
     pub async fn issue_query<Q>(&self, query: Q) -> Result<Q::Output>
     where
-        Q: IndexSetQuery,
+        Q: query::IndexSetQuery,
     {
         self.query_handler.issue(query).await
     }
@@ -207,12 +206,13 @@ where
     }
 
     async fn replay_journal(&self) -> Result<()> {
-        for event_repr in self.event_store.lock().await.journal().await {
-            let event: E = EventDescriptor::from_external_representation(event_repr)?;
-
+        for record in self.event_store.lock().await.journal().await {
+            let event: E = EventDescriptor::from_external_representation(record)?;
             self.tx
-                .send(event.clone())
-                .map_err(|_| Error::Generic(format!("SendError {event:?}")))?;
+                .send(event)
+                .map_err(|broadcast::error::SendError(event)| {
+                    Error::Generic(format!("SendError {event:?}"))
+                })?;
         }
         Ok(())
     }
@@ -222,7 +222,6 @@ where
     async fn emit(&self, event: E) -> Result<()> {
         let mut store = self.event_store.lock().await;
         store.persist(event.clone()).await?;
-
         self.tx
             .send(event)
             .map_err(|broadcast::error::SendError(event)| {
