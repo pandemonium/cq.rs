@@ -83,7 +83,8 @@ pub trait EventStore {
     where
         E: EventDescriptor + Send + Sync + 'static;
 
-    async fn journal(&self) -> impl Iterator<Item = &ExternalRepresentation>;
+    // This is a pourly thought out solution for journal replays
+    async fn journal(&self) -> Result<Vec<ExternalRepresentation>>;
 }
 
 pub trait EventDescriptor: Sized {
@@ -92,6 +93,7 @@ pub trait EventDescriptor: Sized {
         event_id: UniqueId,
         event_time: SystemTime,
     ) -> Result<ExternalRepresentation>;
+
     fn from_external_representation(external: &ExternalRepresentation) -> Result<Self>;
 }
 

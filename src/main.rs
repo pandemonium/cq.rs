@@ -1,6 +1,6 @@
 use serde_json::json;
-use std::fmt::Debug;
 use std::time::SystemTime;
+use std::{fmt::Debug, path::Path};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
@@ -8,17 +8,19 @@ use blister::{
     core::{CommandQueryOrchestrator, EventBus},
     error::{Error, Result},
     http,
-    infrastructure::{EventDescriptor, EventStore, ExternalRepresentation, Termination, UniqueId},
+    infrastructure::{
+        persistence, EventDescriptor, EventStore, ExternalRepresentation, Termination, UniqueId,
+    },
 };
 
 #[derive(Clone, Debug, Default)]
-struct DummyStore {
+struct _DummyStore {
     events: Vec<ExternalRepresentation>,
 }
 
-impl DummyStore {}
+impl _DummyStore {}
 
-impl EventStore for DummyStore {
+impl EventStore for _DummyStore {
     async fn find_by_event_id(&self, UniqueId(id): UniqueId) -> Result<ExternalRepresentation> {
         self.events
             .iter()
@@ -54,13 +56,13 @@ impl EventStore for DummyStore {
         Ok(())
     }
 
-    async fn journal(&self) -> impl Iterator<Item = &ExternalRepresentation> {
-        self.events.iter()
+    async fn journal(&self) -> Result<Vec<ExternalRepresentation>> {
+        Ok(self.events.clone())
     }
 }
 
-fn make_orchestrator() -> CommandQueryOrchestrator<DummyStore> {
-    let store = DummyStore {
+fn _make_dummy_orchestrator() -> CommandQueryOrchestrator<_DummyStore> {
+    let store = _DummyStore {
         events: vec![ExternalRepresentation {
             id: Uuid::new_v4(),
             when: SystemTime::now(),
@@ -73,6 +75,16 @@ fn make_orchestrator() -> CommandQueryOrchestrator<DummyStore> {
     CommandQueryOrchestrator::new(event_bus)
 }
 
+fn make_fjall_orchestrator<P>(store_path: P) -> CommandQueryOrchestrator<persistence::EventArchive>
+where
+    P: AsRef<Path>,
+{
+    let event_store =
+        persistence::EventArchive::try_new(store_path).expect("a valid event archive");
+    let event_bus = EventBus::new(event_store);
+    CommandQueryOrchestrator::new(event_bus)
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -81,7 +93,8 @@ async fn main() {
         .await
         .expect("a free port");
 
-    let orchestrator = make_orchestrator();
+    //    let orchestrator = make_dummy_orchestrator();
+    let orchestrator = make_fjall_orchestrator("event-store");
 
     let terminator = Termination::new();
     orchestrator.start(&terminator).await;

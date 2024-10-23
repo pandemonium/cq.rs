@@ -206,8 +206,8 @@ where
     }
 
     async fn replay_journal(&self) -> Result<()> {
-        for record in self.event_store.lock().await.journal().await {
-            let event: E = EventDescriptor::from_external_representation(record)?;
+        for record in self.event_store.lock().await.journal().await? {
+            let event: E = EventDescriptor::from_external_representation(&record)?;
             self.tx
                 .send(event)
                 .map_err(|broadcast::error::SendError(event)| {
