@@ -187,7 +187,7 @@ pub mod query {
     pub trait IndexSetQuery {
         type Output;
 
-        fn execute(&self, model: &IndexSet) -> Self::Output;
+        fn execute(&self, index: &IndexSet) -> Self::Output;
     }
 
     pub struct AllBooks;
@@ -215,6 +215,20 @@ pub mod query {
                 .books
                 .get(id)
                 .map(|info| Book(id.clone(), info.clone()))
+        }
+    }
+
+    pub struct AuthorById(pub AuthorId);
+
+    impl IndexSetQuery for AuthorById {
+        type Output = Option<Author>;
+
+        fn execute(&self, index: &IndexSet) -> Self::Output {
+            let AuthorById(id) = self;
+            index
+                .authors
+                .get(id)
+                .map(|info| Author(id.clone(), info.clone()))
         }
     }
 

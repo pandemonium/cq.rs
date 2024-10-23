@@ -51,7 +51,8 @@ where
     let authors = Router::new()
         .route("/", get(authors::list))
         .route("/", post(authors::create))
-        .route("/:id", get(authors::get));
+        .route("/:id", get(authors::get))
+        .route("/:id/books", get(books::by_author));
 
     let api = Router::new()
         .nest("/books", books)
@@ -138,6 +139,23 @@ mod books {
             Ok(StatusCode::NOT_ACCEPTABLE)
         }
     }
+
+    pub async fn by_author<ES>(
+        State(orchestrator): State<Orchestrator<ES>>,
+        Path(model::AuthorId(author_id)): Path<model::AuthorId>,
+    ) -> ApiResult<Json<Vec<model::Book>>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        Ok(Json(
+            orchestrator
+                .issue_query(query::BooksByAuthorId(author_id))
+                .await?
+                .into_iter()
+                .map(|b| b.into())
+                .collect(),
+        ))
+    }
 }
 
 mod authors {
@@ -148,13 +166,16 @@ mod authors {
 
     pub async fn get<ES>(
         State(orchestrator): State<Orchestrator<ES>>,
-        Path(model::BookId(book_id)): Path<model::BookId>,
-    ) -> ApiResult<Json<model::Book>>
+        Path(model::AuthorId(author_id)): Path<model::AuthorId>,
+    ) -> ApiResult<Json<model::Author>>
     where
         ES: EventStore + Clone + 'static,
     {
-        if let Some(book) = orchestrator.issue_query(query::BookById(book_id)).await? {
-            Ok(Json(book.into()))
+        if let Some(author) = orchestrator
+            .issue_query(query::AuthorById(author_id))
+            .await?
+        {
+            Ok(Json(author.into()))
         } else {
             ApiError::not_found()
         }

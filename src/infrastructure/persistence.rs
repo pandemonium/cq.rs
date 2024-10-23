@@ -164,16 +164,6 @@ impl EventArchiveInner {
 
         Ok(events)
     }
-
-    //  Do I suddenly have a real case for a
-    //    fn iter(&self) -> impl Iterator<Item = error::Result<&ExternalRepresentation>> {
-    //        self.events.iter().map(|x| {
-    //            x.map_err(|x| x.into()).and_then(|(_, event_bytes)| {
-    //                ArchivedRepresentation::from_slice(&event_bytes)
-    //                    .map(|x| x.into_external_representation())
-    //            })
-    //        })
-    //    }
 }
 
 impl EventStore for EventArchive {

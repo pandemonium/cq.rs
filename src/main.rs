@@ -9,7 +9,8 @@ use blister::{
     error::{Error, Result},
     http,
     infrastructure::{
-        persistence, EventDescriptor, EventStore, ExternalRepresentation, Termination, UniqueId,
+        persistence::EventArchive, EventDescriptor, EventStore, ExternalRepresentation,
+        Termination, UniqueId,
     },
 };
 
@@ -75,13 +76,14 @@ fn _make_dummy_orchestrator() -> CommandQueryOrchestrator<_DummyStore> {
     CommandQueryOrchestrator::new(event_bus)
 }
 
-fn make_fjall_orchestrator<P>(store_path: P) -> CommandQueryOrchestrator<persistence::EventArchive>
+fn make_orchestrator<P>(store_path: P) -> CommandQueryOrchestrator<EventArchive>
 where
     P: AsRef<Path>,
 {
-    let event_store =
-        persistence::EventArchive::try_new(store_path).expect("a valid event archive");
+    let event_store = EventArchive::try_new(store_path).expect("a valid event archive");
     let event_bus = EventBus::new(event_store);
+
+    // This name is big and corny
     CommandQueryOrchestrator::new(event_bus)
 }
 
@@ -94,9 +96,12 @@ async fn main() {
         .expect("a free port");
 
     //    let orchestrator = make_dummy_orchestrator();
-    let orchestrator = make_fjall_orchestrator("event-store");
+    let orchestrator = make_orchestrator("event-store");
 
     let terminator = Termination::new();
+    // threaded because both the QueryHandler and CommandDispatcher
+    // both poll for events
+    // I guess these parts could be re-written to be event driven instead
     orchestrator.start(&terminator).await;
 
     http::Api::new(orchestrator)
