@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use blister::{
-    core::{CommandQueryOrchestrator, EventBus},
+    core::{Application, EventBus},
     error::{Error, Result},
     http,
     infrastructure::{
@@ -62,7 +62,7 @@ impl EventStore for _DummyStore {
     }
 }
 
-fn _make_dummy_orchestrator() -> CommandQueryOrchestrator<_DummyStore> {
+fn _make_application() -> Application<_DummyStore> {
     let store = _DummyStore {
         events: vec![ExternalRepresentation {
             id: Uuid::new_v4(),
@@ -73,10 +73,10 @@ fn _make_dummy_orchestrator() -> CommandQueryOrchestrator<_DummyStore> {
         }],
     };
     let event_bus = EventBus::new(store);
-    CommandQueryOrchestrator::new(event_bus)
+    Application::new(event_bus)
 }
 
-fn make_orchestrator<P>(store_path: P) -> CommandQueryOrchestrator<EventArchive>
+fn make_application<P>(store_path: P) -> Application<EventArchive>
 where
     P: AsRef<Path>,
 {
@@ -84,7 +84,7 @@ where
     let event_bus = EventBus::new(event_store);
 
     // This name is big and corny
-    CommandQueryOrchestrator::new(event_bus)
+    Application::new(event_bus)
 }
 
 #[tokio::main]
@@ -95,16 +95,15 @@ async fn main() {
         .await
         .expect("a free port");
 
-    //    let orchestrator = make_dummy_orchestrator();
-    let orchestrator = make_orchestrator("event-store");
+    let application = make_application("event-store");
 
     let terminator = Termination::new();
     // threaded because both the QueryHandler and CommandDispatcher
     // both poll for events
     // I guess these parts could be re-written to be event driven instead
-    orchestrator.start(&terminator).await;
+    application.start(&terminator).await;
 
-    http::Api::new(orchestrator)
+    http::Api::new(application)
         .start(listener)
         .await
         .expect("starting the API to work");

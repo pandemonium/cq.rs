@@ -146,18 +146,18 @@ impl QueryHandler {
     }
 }
 
-pub struct CommandQueryOrchestrator<ES> {
+pub struct Application<ES> {
     command_dispatcher: CommandDispatcher<ES>,
     query_handler: QueryHandler,
 }
 
-impl<ES> CommandQueryOrchestrator<ES>
+impl<ES> Application<ES>
 where
     ES: EventStore,
 {
     pub fn new(event_bus: EventBus<ES, Event>) -> Self {
         let event_subscription = event_bus.subscribe();
-        CommandQueryOrchestrator {
+        Application {
             command_dispatcher: CommandDispatcher::new(event_bus),
             query_handler: QueryHandler::new(event_subscription),
         }
