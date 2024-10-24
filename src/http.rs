@@ -19,6 +19,8 @@ use crate::{
 
 pub mod model;
 
+const API_RESOURCE_PREFIX: &str = "/api/v1";
+
 type ApiResult<A> = StdResult<A, ApiError>;
 
 // The Api type can go away and become just a function:
@@ -56,13 +58,16 @@ where
         .route("/:id", get(authors::get))
         .route("/:id/books", get(books::by_author));
 
+    let search = get(search::text);
+
     let api = Router::new()
         .nest("/books", books)
-        .nest("/authors", authors);
+        .nest("/authors", authors)
+        .route("/search", search);
 
     Router::new()
         .route("/", get(system_root))
-        .nest("/api/v1", api)
+        .nest(API_RESOURCE_PREFIX, api)
 }
 
 enum ApiError {
@@ -88,6 +93,30 @@ impl IntoResponse for ApiError {
             ApiError::Internal(error) => format!("{error}").into_response(),
             ApiError::ServiceStatus(status) => status.into_response(),
         }
+    }
+}
+
+mod search {
+    use super::*;
+    use axum::{extract::Query, Json};
+
+    use domain::query;
+
+    pub async fn text<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Query(model::SearchTerm { query }): Query<model::SearchTerm>,
+    ) -> ApiResult<Json<Vec<model::SearchResultItem>>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        let hits = application
+            .issue_query(query::text::SearchQuery(query))
+            .await?
+            .into_iter()
+            .map(|hit| model::SearchResultItem::from_search_hit(hit.into(), API_RESOURCE_PREFIX))
+            .collect();
+
+        Ok(Json(hits))
     }
 }
 

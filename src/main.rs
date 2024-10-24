@@ -83,7 +83,6 @@ where
     let event_store = EventArchive::try_new(store_path).expect("a valid event archive");
     let event_bus = EventBus::new(event_store);
 
-    // This name is big and corny
     Application::new(event_bus)
 }
 

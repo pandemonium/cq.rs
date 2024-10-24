@@ -102,7 +102,7 @@ pub struct AuthorInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Isbn(pub String);
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorId(pub UniqueId);
 
 impl AggregateRoot for Author {
@@ -128,7 +128,7 @@ impl AggregateIdentity for AuthorId {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookId(pub UniqueId);
 
 impl AggregateRoot for Book {
@@ -165,10 +165,16 @@ pub mod query {
         authors: HashMap<AuthorId, AuthorInfo>,
         books: HashMap<BookId, BookInfo>,
         books_by_author_id: HashMap<AuthorId, Vec<BookId>>,
+        texts: text::SearchIndex,
     }
 
     impl IndexSet {
         pub fn apply(&mut self, event: Event) {
+            self.texts.apply(&event);
+            self.apply_event(event)
+        }
+
+        fn apply_event(&mut self, event: Event) {
             match event {
                 Event::BookAdded(id, info) => {
                     self.books.insert(id.clone(), info.clone());
@@ -266,6 +272,141 @@ pub mod query {
             } else {
                 vec![]
             }
+        }
+    }
+
+    pub mod text {
+        use std::{
+            cmp::Eq,
+            collections::{HashMap, HashSet},
+        };
+
+        use crate::core::model::{
+            query::{IndexSet, IndexSetQuery},
+            AuthorId, AuthorInfo, BookId, BookInfo, Event, Isbn,
+        };
+
+        const SEARCH_TERM_LENGTH_THRESHOLD: usize = 1;
+
+        fn tokenize(phrase: &str) -> Vec<&str> {
+            phrase
+                .split(&[' ', ',', '.', '-', '(', ')'])
+                .filter(|term| term.len() > SEARCH_TERM_LENGTH_THRESHOLD)
+                .collect()
+        }
+
+        // Move to super-module - this must not be publically
+        // accessible from the http module
+        #[derive(Debug, Default)]
+        pub struct SearchIndex {
+            term_projections: HashMap<String, HashSet<Projection>>,
+        }
+
+        impl SearchIndex {
+            pub fn apply(&mut self, event: &Event) {
+                match event {
+                    Event::BookAdded(
+                        id,
+                        BookInfo {
+                            isbn: Isbn(isbn),
+                            title,
+                            ..
+                        },
+                    ) => {
+                        let this_book = Projection::Books(BookField::Isbn(*id));
+                        self.bind_term(isbn, this_book);
+                        self.index_phrase(title, this_book);
+                    }
+                    Event::AuthorAdded(id, AuthorInfo { name }) => {
+                        self.index_phrase(name, Projection::Authors(AuthorField::Name(*id)));
+                    }
+                }
+            }
+
+            fn index_phrase(&mut self, phrase: &str, target: Projection) {
+                for token in tokenize(phrase) {
+                    self.bind_term(token, target)
+                }
+            }
+
+            fn bind_term(&mut self, term: &str, target: Projection) {
+                self.term_projections
+                    .entry(term.to_owned())
+                    .or_default()
+                    .insert(target);
+            }
+
+            pub fn lookup(&self, term: &str) -> Vec<Projection> {
+                if let Some(xs) = self.term_projections.get(term) {
+                    xs.iter().copied().collect()
+                } else {
+                    vec![]
+                }
+            }
+        }
+
+        // SearchQuery with multiple terms that return intersection(hits*)
+        pub struct SearchQuery(pub String);
+
+        pub struct SearchHit {
+            pub target: Projection,
+            pub source: String,
+        }
+
+        impl IndexSetQuery for SearchQuery {
+            type Output = Vec<SearchHit>;
+
+            fn execute(&self, index: &IndexSet) -> Self::Output {
+                let mut hits = vec![];
+
+                let SearchQuery(search_term) = self;
+                for projection in index.texts.lookup(search_term) {
+                    if let Some(hit) = resolve_projection(projection, index) {
+                        hits.push(hit)
+                    } else {
+                        panic!("Text index has data that is not reflected in the field indices.")
+                    }
+                }
+
+                hits
+            }
+        }
+
+        // It would look good to have this on IndexSet, but ... what?
+        fn resolve_projection(target: Projection, index: &IndexSet) -> Option<SearchHit> {
+            let source = match &target {
+                Projection::Books(BookField::Isbn(id)) => index.books.get(id).map(
+                    |BookInfo {
+                         isbn: Isbn(isbn), ..
+                     }| isbn,
+                ),
+                Projection::Books(BookField::Title(id)) => index.books.get(id).map(|x| &x.title),
+                Projection::Authors(AuthorField::Name(id)) => {
+                    index.authors.get(id).map(|x| &x.name)
+                }
+            };
+
+            source.map(|source| SearchHit {
+                target,
+                source: source.to_owned(),
+            })
+        }
+
+        #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+        pub enum Projection {
+            Books(BookField),
+            Authors(AuthorField),
+        }
+
+        #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+        pub enum BookField {
+            Title(BookId),
+            Isbn(BookId),
+        }
+
+        #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+        pub enum AuthorField {
+            Name(AuthorId),
         }
     }
 }
