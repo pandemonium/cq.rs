@@ -81,24 +81,30 @@ pub struct SearchTerm {
 // have to refashion this here
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResultItem {
-    resource_uri: String,
+    uri: String,
+    // This can use a peer to text_model::Projection instead
+    // because it can also become a Resource.
+    #[serde(flatten)]
     hit: SearchHit,
 }
 
 impl SearchResultItem {
     pub fn from_search_hit(hit: SearchHit, resource_prefix: &str) -> Self {
         Self {
-            resource_uri: hit.referenced_resource().uri(resource_prefix),
+            uri: hit.referenced_resource().uri(resource_prefix),
             hit,
         }
     }
 }
 
-// Let's see what kind of json this renders
 #[derive(Debug, Serialize, Deserialize)]
+//#[serde(untagged)]
 pub enum SearchHit {
+    #[serde(rename = "book")]
     BookTitle { title: String, id: BookId },
+    #[serde(rename = "book")]
     BookIsbn { isbn: String, id: BookId },
+    #[serde(rename = "author")]
     Author { name: String, id: AuthorId },
 }
 
@@ -143,6 +149,22 @@ impl Resource {
         match self {
             Resource::Author(id) => format!("{prefix}/authors/{id}"),
             Resource::Book(id) => format!("{prefix}/books/{id}"),
+        }
+    }
+}
+
+impl From<text_search::Projection> for Resource {
+    fn from(value: text_search::Projection) -> Self {
+        match value {
+            text_search::Projection::Books(text_search::BookField::Isbn(id)) => {
+                Resource::Book(id.into())
+            }
+            text_search::Projection::Books(text_search::BookField::Title(id)) => {
+                Resource::Book(id.into())
+            }
+            text_search::Projection::Authors(text_search::AuthorField::Name(id)) => {
+                Resource::Author(id.into())
+            }
         }
     }
 }

@@ -315,7 +315,7 @@ pub mod query {
                     ) => {
                         let this_book = Projection::Books(BookField::Isbn(*id));
                         self.bind_term(isbn, this_book);
-                        self.index_phrase(title, this_book);
+                        self.index_phrase(title, Projection::Books(BookField::Title(*id)));
                     }
                     Event::AuthorAdded(id, AuthorInfo { name }) => {
                         self.index_phrase(name, Projection::Authors(AuthorField::Name(*id)));
