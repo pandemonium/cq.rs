@@ -4,7 +4,7 @@ use std::{fmt::Debug, path::Path};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
-use blister::{
+use server::{
     core::{Application, EventBus},
     error::{Error, Result},
     http,
