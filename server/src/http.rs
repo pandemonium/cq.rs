@@ -239,7 +239,7 @@ mod authors {
         ES: EventStore + Clone + 'static,
     {
         application.submit_command(Command::AddAuthor(author)).await;
-        Ok(StatusCode::CREATED)
+        Ok(StatusCode::ACCEPTED)
     }
 
     pub async fn by_book<ES>(

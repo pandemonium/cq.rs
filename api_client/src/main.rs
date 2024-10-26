@@ -1,5 +1,6 @@
 use reqwest::Client;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{de::DeserializeOwned, Serialize};
+use uuid::uuid;
 
 struct ApiClient {
     http_client: Client,
@@ -50,6 +51,33 @@ impl ApiClient {
             .await
     }
 
+    pub async fn put_author(&self, info: model::AuthorInfo) -> error::Result<()> {
+        self.put_resource("/authors", info).await
+    }
+
+    pub async fn put_book(&self, info: model::BookInfo) -> error::Result<()> {
+        self.put_resource("/books", info).await
+    }
+
+    async fn put_resource<R>(&self, uri: &str, resource: R) -> error::Result<()>
+    where
+        R: Serialize,
+    {
+        let resource_uri = self.resolve_resource_uri(uri);
+        let request = self
+            .http_client
+            .post(resource_uri)
+            .json(&resource)
+            .build()?;
+        let response = self.http_client.execute(request).await?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(error::Error::Server(response.status()))
+        }
+    }
+
     pub async fn search(&self, query_text: &str) -> error::Result<Vec<model::SearchResultItem>> {
         let resource_uri = self.resolve_resource_uri("/search");
         let request = self
@@ -75,9 +103,10 @@ impl ApiClient {
 }
 
 mod error {
+    use reqwest::StatusCode;
     use std::result::Result as StdResult;
-
     use thiserror::Error;
+
     #[derive(Error, Debug)]
     pub enum Error {
         #[error("JSON marshalling failed {0}")]
@@ -85,6 +114,9 @@ mod error {
 
         #[error("HTTP IO failed {0}")]
         Http(#[from] reqwest::Error),
+
+        #[error("Request failed {0}")]
+        Server(StatusCode),
     }
 
     pub type Result<A> = StdResult<A, Error>;
@@ -191,4 +223,20 @@ async fn main() {
             model::SearchHit::Author { name, .. } => println!("Author '{name}, at: {uri}'"),
         }
     }
+
+    //    client
+    //        .put_author(model::AuthorInfo {
+    //            name: "Magnus Ranstorp".to_owned(),
+    //        })
+    //        .await
+    //        .expect("msg");
+
+    //    client
+    //        .put_book(model::BookInfo {
+    //            isbn: "978-91-8002504-1".to_owned(),
+    //            title: "Hamas Terror Innifrån".to_owned(),
+    //            author: model::AuthorId(uuid!("116dedaf-b5ba-4cb8-8b5a-1c5f08098f22")),
+    //        })
+    //        .await
+    //        .expect("msg");
 }
