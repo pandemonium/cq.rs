@@ -1,4 +1,3 @@
-use model::Book;
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize};
 
@@ -39,7 +38,7 @@ impl ApiClient {
         &self,
         book_id: model::BookId,
     ) -> error::Result<Option<model::Author>> {
-        self.request_resource(&format!("/books/{}/author", book_id))
+        self.request_resource(&format!("/books/{book_id}/author"))
             .await
     }
 
@@ -47,8 +46,19 @@ impl ApiClient {
         &self,
         author_id: model::AuthorId,
     ) -> error::Result<Vec<model::Book>> {
-        self.request_resource(&format!("/authors/{}/books", author_id))
+        self.request_resource(&format!("/authors/{author_id}/books"))
             .await
+    }
+
+    pub async fn search(&self, query_text: &str) -> error::Result<Vec<model::SearchResultItem>> {
+        let resource_uri = self.resolve_resource_uri("/search");
+        let request = self
+            .http_client
+            .get(resource_uri)
+            .query(&[("query", query_text)])
+            .build()?;
+        let response = self.http_client.execute(request).await?;
+        Ok(serde_json::from_slice(&response.bytes().await?)?)
     }
 
     // An ADT can be constructed around the Resource abstraction to deal
@@ -82,10 +92,10 @@ mod error {
 
 // Think about extracting his and the stuff in http::model
 // into a common crate "model types" or somesuch
+// Also: add Readers and what they've read
 mod model {
-    use core::fmt;
-
     use serde::{Deserialize, Serialize};
+    use std::fmt;
     use uuid::Uuid;
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -131,6 +141,23 @@ mod model {
             write!(f, "{id}")
         }
     }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct SearchResultItem {
+        pub uri: String,
+        pub hit: SearchHit,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(untagged)]
+    pub enum SearchHit {
+        #[serde(rename = "book-title")]
+        BookTitle { title: String, id: BookId },
+        #[serde(rename = "book-isbn")]
+        BookIsbn { isbn: String, id: BookId },
+        #[serde(rename = "author")]
+        Author { name: String, id: AuthorId },
+    }
 }
 
 #[tokio::main]
@@ -143,7 +170,7 @@ async fn main() {
     let authors = client.get_authors().await.expect("some authors");
     println!("Authors: {authors:?}");
 
-    for Book { id, info } in books {
+    for model::Book { id, info } in books {
         let author = client.get_author_by_book(id).await.expect("book's author");
         println!(
             "{} by {}",
@@ -154,6 +181,14 @@ async fn main() {
 
     for model::Author { id, info } in authors {
         let books = client.get_books_by_author(id).await.expect("some books");
-        println!("Books: {books:?}");
+        println!("Books by {}: {books:?}", info.name);
+    }
+
+    for model::SearchResultItem { uri, hit } in client.search("Bo").await.expect("msg") {
+        match hit {
+            model::SearchHit::BookTitle { title, .. } => println!("Title '{title}, at: {uri}'"),
+            model::SearchHit::BookIsbn { isbn, .. } => println!("ISBN '{isbn}, at: {uri}'"),
+            model::SearchHit::Author { name, .. } => println!("Author '{name}, at: {uri}'"),
+        }
     }
 }

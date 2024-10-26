@@ -1,6 +1,5 @@
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use crate::core::model as domain;
 
@@ -84,7 +83,6 @@ pub struct SearchResultItem {
     uri: String,
     // This can use a peer to text_model::Projection instead
     // because it can also become a Resource.
-    #[serde(flatten)]
     hit: SearchHit,
 }
 
@@ -98,13 +96,10 @@ impl SearchResultItem {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-//#[serde(untagged)]
+#[serde(untagged)]
 pub enum SearchHit {
-    #[serde(rename = "book")]
     BookTitle { title: String, id: BookId },
-    #[serde(rename = "book")]
     BookIsbn { isbn: String, id: BookId },
-    #[serde(rename = "author")]
     Author { name: String, id: AuthorId },
 }
 
