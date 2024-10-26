@@ -50,7 +50,9 @@ where
     let books = Router::new()
         .route("/", get(books::list))
         .route("/", post(books::create))
-        .route("/:id", get(books::get));
+        .route("/:id", get(books::get))
+        .route("/:id/author", get(authors::by_book)); // todo: 'authors' and change the
+                                                      // model tor reflect this
 
     let authors = Router::new()
         .route("/", get(authors::list))
@@ -238,6 +240,23 @@ mod authors {
     {
         application.submit_command(Command::AddAuthor(author)).await;
         Ok(StatusCode::CREATED)
+    }
+
+    pub async fn by_book<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(model::BookId(book_id)): Path<model::BookId>,
+    ) -> ApiResult<Json<model::Author>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        if let Some(author) = application
+            .issue_query(query::AuthorByBookId(book_id))
+            .await?
+        {
+            Ok(Json(author.into()))
+        } else {
+            ApiError::not_found()
+        }
     }
 }
 

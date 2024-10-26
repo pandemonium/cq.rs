@@ -238,6 +238,22 @@ pub mod query {
         }
     }
 
+    pub struct AuthorByBookId(pub BookId);
+
+    impl IndexSetQuery for AuthorByBookId {
+        type Output = Option<Author>;
+
+        fn execute(&self, index: &IndexSet) -> Self::Output {
+            let AuthorByBookId(id) = self;
+            index.books.get(id).and_then(|BookInfo { author, .. }| {
+                index
+                    .authors
+                    .get(author)
+                    .map(|info| Author(author.clone(), info.clone())) // this pattern repeats.
+            })
+        }
+    }
+
     pub struct AllAuthors;
 
     impl IndexSetQuery for AllAuthors {
