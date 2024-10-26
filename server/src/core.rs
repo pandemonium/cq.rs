@@ -15,7 +15,7 @@ use crate::{
     error::{Error, Result},
     infrastructure::{EventDescriptor, EventStore, Termination, TerminationWaiter, UniqueId},
 };
-use model::{query, AuthorId, BookId, Command, Event};
+use model::{query, AuthorId, BookId, Command, Event, ReaderId};
 
 pub mod model;
 
@@ -97,6 +97,43 @@ where
                     .await
                     .expect("emit");
                 true
+            }
+            Command::AddReader(info) => {
+                if self
+                    .write_model
+                    .read()
+                    .await
+                    .reader_id_by_moniker
+                    .get(&info.unique_moniker)
+                    .is_none()
+                {
+                    let id = ReaderId(UniqueId::fresh());
+                    self.event_bus
+                        .emit(Event::ReaderAdded(id, info))
+                        .await
+                        .expect("emit");
+                    true
+                } else {
+                    false
+                }
+            }
+            Command::ReadBook(info) => {
+                if !self
+                    .write_model
+                    .read()
+                    .await
+                    .books_read
+                    .get(&info.reader_id)
+                    .is_some_and(|books| books.contains(&info.book_id))
+                {
+                    self.event_bus
+                        .emit(Event::BookRead(info.reader_id, info))
+                        .await
+                        .expect("emit");
+                    true
+                } else {
+                    false
+                }
             }
         }
     }
@@ -258,6 +295,8 @@ struct WriteModel {
     author_name_ids: HashMap<String, Vec<AuthorId>>,
     book_title_ids: HashMap<String, Vec<BookId>>,
     author_ids: HashSet<AuthorId>,
+    reader_id_by_moniker: HashMap<String, ReaderId>,
+    books_read: HashMap<ReaderId, HashSet<BookId>>,
 }
 
 impl WriteModel {
@@ -272,6 +311,12 @@ impl WriteModel {
                     .or_default()
                     .push(id.clone());
                 self.author_ids.insert(id);
+            }
+            Event::ReaderAdded(id, info) => {
+                self.reader_id_by_moniker.insert(info.unique_moniker, id);
+            }
+            Event::BookRead(id, info) => {
+                self.books_read.entry(id).or_default().insert(info.book_id);
             }
         }
     }

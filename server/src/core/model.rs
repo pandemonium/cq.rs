@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
+use time::OffsetDateTime;
 
 use crate::{
     error::{Error, Result},
@@ -13,16 +14,22 @@ use crate::{
 pub enum Event {
     BookAdded(BookId, BookInfo),
     AuthorAdded(AuthorId, AuthorInfo),
+    ReaderAdded(ReaderId, ReaderInfo),
+    BookRead(ReaderId, BookReadInfo),
 }
 
 impl Event {
     const BOOK_ADDED: &str = "book-added";
     const AUTHOR_ADDED: &str = "author-added";
+    const READER_ADDED: &str = "reader-added";
+    const BOOK_READ: &str = "book-read";
 
     fn name(&self) -> &str {
         match self {
             Event::BookAdded(..) => Self::BOOK_ADDED,
             Event::AuthorAdded(..) => Self::AUTHOR_ADDED,
+            Event::ReaderAdded(..) => Self::READER_ADDED,
+            Event::BookRead(..) => Self::BOOK_READ,
         }
     }
 }
@@ -50,6 +57,22 @@ impl EventDescriptor for Event {
                     data: serde_json::to_value(info)?,
                 })
             }
+            Event::ReaderAdded(ReaderId(UniqueId(aggregate_id)), info) => {
+                Ok(ExternalRepresentation {
+                    id,
+                    when,
+                    aggregate_id: *aggregate_id,
+                    what: self.name().to_owned(),
+                    data: serde_json::to_value(info)?,
+                })
+            }
+            Event::BookRead(ReaderId(UniqueId(aggregate_id)), info) => Ok(ExternalRepresentation {
+                id,
+                when,
+                aggregate_id: *aggregate_id,
+                what: self.name().to_owned(),
+                data: serde_json::to_value(info)?,
+            }),
         }
     }
 
@@ -70,6 +93,14 @@ impl EventDescriptor for Event {
                 BookId(UniqueId(*aggregate_id)),
                 serde_json::from_value(data.clone())?,
             )),
+            Event::READER_ADDED => Ok(Event::ReaderAdded(
+                ReaderId(UniqueId(*aggregate_id)),
+                serde_json::from_value(data.clone())?,
+            )),
+            Event::BOOK_READ => Ok(Event::BookRead(
+                ReaderId(UniqueId(*aggregate_id)),
+                serde_json::from_value(data.clone())?,
+            )),
             otherwise => Err(Error::UnknownEventType(otherwise.to_owned())),
         }
     }
@@ -85,6 +116,8 @@ pub struct Book(pub BookId, pub BookInfo);
 pub enum Command {
     AddBook(BookInfo),
     AddAuthor(AuthorInfo),
+    AddReader(ReaderInfo),
+    ReadBook(BookReadInfo),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,6 +137,26 @@ pub struct Isbn(pub String);
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorId(pub UniqueId);
+
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReaderId(pub UniqueId);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReaderInfo {
+    pub name: String,
+    pub unique_moniker: String,
+}
+
+#[derive(Debug)]
+pub struct Reader(pub ReaderId, pub ReaderInfo);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookReadInfo {
+    // This thing should not be needed here. Move into the event
+    pub reader_id: ReaderId,
+    pub book_id: BookId,
+    pub when: Option<OffsetDateTime>,
+}
 
 impl AggregateRoot for Author {
     type Id = AuthorId;
@@ -156,14 +209,19 @@ impl AggregateIdentity for BookId {
 }
 
 pub mod query {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
-    use crate::core::model::{Author, AuthorId, AuthorInfo, Book, BookId, BookInfo, Event};
+    use crate::core::model::{
+        Author, AuthorId, AuthorInfo, Book, BookId, BookInfo, BookReadInfo, Event, Reader,
+        ReaderId, ReaderInfo,
+    };
 
     #[derive(Debug, Default)]
     pub struct IndexSet {
         authors: HashMap<AuthorId, AuthorInfo>,
         books: HashMap<BookId, BookInfo>,
+        readers: HashMap<ReaderId, ReaderInfo>,
+        books_by_reader_id: HashMap<ReaderId, HashSet<BookReadInfo>>,
         books_by_author_id: HashMap<AuthorId, Vec<BookId>>,
         texts: text::SearchIndex,
     }
@@ -185,6 +243,12 @@ pub mod query {
                 }
                 Event::AuthorAdded(id, info) => {
                     self.authors.insert(id, info);
+                }
+                Event::ReaderAdded(id, info) => {
+                    self.readers.insert(id, info);
+                }
+                Event::BookRead(id, info) => {
+                    self.books_by_reader_id.entry(id).or_default().insert(info);
                 }
             }
         }
@@ -216,7 +280,7 @@ pub mod query {
         type Output = Option<Book>;
 
         fn execute(&self, index: &IndexSet) -> Self::Output {
-            let BookById(id) = self;
+            let Self(id) = self;
             index
                 .books
                 .get(id)
@@ -230,7 +294,7 @@ pub mod query {
         type Output = Option<Author>;
 
         fn execute(&self, index: &IndexSet) -> Self::Output {
-            let AuthorById(id) = self;
+            let Self(id) = self;
             index
                 .authors
                 .get(id)
@@ -244,13 +308,39 @@ pub mod query {
         type Output = Option<Author>;
 
         fn execute(&self, index: &IndexSet) -> Self::Output {
-            let AuthorByBookId(id) = self;
+            let Self(id) = self;
             index.books.get(id).and_then(|BookInfo { author, .. }| {
                 index
                     .authors
                     .get(author)
                     .map(|info| Author(author.clone(), info.clone())) // this pattern repeats.
             })
+        }
+    }
+
+    pub struct BooksByReader(pub ReaderId);
+
+    impl IndexSetQuery for BooksByReader {
+        type Output = Vec<Book>;
+
+        fn execute(&self, index: &IndexSet) -> Self::Output {
+            let Self(id) = self;
+
+            index
+                .books_by_reader_id
+                .get(id)
+                .and_then(|read_books| {
+                    read_books
+                        .iter()
+                        .map(|BookReadInfo { book_id, .. }| {
+                            index
+                                .books
+                                .get(book_id)
+                                .map(|info| Book(book_id.clone(), info.clone()))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .unwrap_or(vec![])
         }
     }
 
@@ -274,7 +364,7 @@ pub mod query {
         type Output = Vec<Book>;
 
         fn execute(&self, index: &IndexSet) -> Self::Output {
-            let BooksByAuthorId(author_id) = self;
+            let Self(author_id) = self;
             if let Some(book_ids) = index.books_by_author_id.get(author_id) {
                 book_ids
                     .iter()
@@ -288,6 +378,34 @@ pub mod query {
             } else {
                 vec![]
             }
+        }
+    }
+
+    pub struct AllReaders;
+
+    impl IndexSetQuery for AllReaders {
+        type Output = Vec<Reader>;
+
+        fn execute(&self, index: &IndexSet) -> Self::Output {
+            index
+                .readers
+                .iter()
+                .map(|(id, info)| Reader(id.clone(), info.clone()))
+                .collect()
+        }
+    }
+
+    pub struct ReaderById(pub ReaderId);
+
+    impl IndexSetQuery for ReaderById {
+        type Output = Option<Reader>;
+
+        fn execute(&self, index: &IndexSet) -> Self::Output {
+            let Self(id) = self;
+            index
+                .readers
+                .get(id)
+                .map(|info| Reader(id.clone(), info.clone()))
         }
     }
 
@@ -336,6 +454,9 @@ pub mod query {
                     Event::AuthorAdded(id, AuthorInfo { name }) => {
                         self.index_phrase(name, Projection::Authors(AuthorField::Name(*id)));
                     }
+                    // Don't index these
+                    Event::ReaderAdded(..) => (),
+                    Event::BookRead(..) => (),
                 }
             }
 

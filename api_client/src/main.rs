@@ -1,6 +1,5 @@
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Serialize};
-use uuid::uuid;
 
 struct ApiClient {
     http_client: Client,

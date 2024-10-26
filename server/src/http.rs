@@ -51,6 +51,7 @@ where
         .route("/", get(books::list))
         .route("/", post(books::create))
         .route("/:id", get(books::get))
+        .route("/:id/readers", post(books::add_reader))
         .route("/:id/author", get(authors::by_book)); // todo: 'authors' and change the
                                                       // model tor reflect this
 
@@ -60,11 +61,18 @@ where
         .route("/:id", get(authors::get))
         .route("/:id/books", get(books::by_author));
 
+    let readers = Router::new()
+        .route("/", get(readers::list))
+        .route("/", post(readers::create))
+        .route("/:id", get(readers::get))
+        .route("/:id/books", get(books::by_reader));
+
     let search = get(search::text);
 
     let api = Router::new()
         .nest("/books", books)
         .nest("/authors", authors)
+        .nest("/readers", readers)
         .route("/search", search);
 
     Router::new()
@@ -167,7 +175,7 @@ mod books {
         ES: EventStore + Clone + 'static,
     {
         if application.submit_command(Command::AddBook(book)).await {
-            Ok(StatusCode::CREATED)
+            Ok(StatusCode::ACCEPTED)
         } else {
             Ok(StatusCode::NOT_ACCEPTABLE)
         }
@@ -188,6 +196,45 @@ mod books {
                 .map(|b| b.into())
                 .collect(),
         ))
+    }
+
+    pub async fn by_reader<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(model::ReaderId(reader_id)): Path<model::ReaderId>,
+    ) -> ApiResult<Json<Vec<model::Book>>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        Ok(Json(
+            application
+                .issue_query(query::BooksByReader(reader_id))
+                .await?
+                .into_iter()
+                .map(|b| b.into())
+                .collect(),
+        ))
+    }
+
+    pub async fn add_reader<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(model::BookId(book_id)): Path<model::BookId>,
+        Json(model::NewBookRead { reader_id, when }): Json<model::NewBookRead>,
+    ) -> ApiResult<StatusCode>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        if application
+            .submit_command(Command::ReadBook(domain::BookReadInfo {
+                reader_id: reader_id.into(),
+                book_id,
+                when,
+            }))
+            .await
+        {
+            Ok(StatusCode::ACCEPTED)
+        } else {
+            Ok(StatusCode::NOT_ACCEPTABLE)
+        }
     }
 }
 
@@ -238,8 +285,11 @@ mod authors {
     where
         ES: EventStore + Clone + 'static,
     {
-        application.submit_command(Command::AddAuthor(author)).await;
-        Ok(StatusCode::ACCEPTED)
+        if application.submit_command(Command::AddAuthor(author)).await {
+            Ok(StatusCode::ACCEPTED)
+        } else {
+            Ok(StatusCode::NOT_ACCEPTABLE)
+        }
     }
 
     pub async fn by_book<ES>(
@@ -256,6 +306,60 @@ mod authors {
             Ok(Json(author.into()))
         } else {
             ApiError::not_found()
+        }
+    }
+}
+
+mod readers {
+    use super::*;
+    use axum::{extract::Path, http::StatusCode, Json};
+
+    use domain::{query, Command};
+
+    pub async fn get<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(model::ReaderId(reader_id)): Path<model::ReaderId>,
+    ) -> ApiResult<Json<model::Reader>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        if let Some(reader) = application
+            .issue_query(query::ReaderById(reader_id))
+            .await?
+        {
+            Ok(Json(reader.into()))
+        } else {
+            ApiError::not_found()
+        }
+    }
+
+    pub async fn list<ES>(
+        State(application): State<ApplicationInner<ES>>,
+    ) -> ApiResult<Json<Vec<model::Reader>>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        Ok(Json(
+            application
+                .issue_query(query::AllReaders)
+                .await?
+                .into_iter()
+                .map(|b| b.into())
+                .collect(),
+        ))
+    }
+
+    pub async fn create<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Json(model::NewReader(reader)): Json<model::NewReader>,
+    ) -> ApiResult<StatusCode>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        if application.submit_command(Command::AddReader(reader)).await {
+            Ok(StatusCode::ACCEPTED)
+        } else {
+            Ok(StatusCode::NOT_ACCEPTABLE)
         }
     }
 }

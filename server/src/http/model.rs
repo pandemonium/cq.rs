@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use time::OffsetDateTime;
 
 use crate::core::model as domain;
 
@@ -70,6 +71,43 @@ impl From<domain::Book> for Book {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewAuthor(pub domain::AuthorInfo);
+
+#[derive(Serialize, Deserialize)]
+pub struct Reader {
+    id: domain::ReaderId,
+    info: domain::ReaderInfo,
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct ReaderId(pub domain::ReaderId);
+
+impl From<ReaderId> for domain::ReaderId {
+    fn from(ReaderId(value): ReaderId) -> Self {
+        value
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NewReader(pub domain::ReaderInfo);
+
+impl fmt::Display for ReaderId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(domain::ReaderId(id)) = self;
+        write!(f, "{id}")
+    }
+}
+
+impl From<domain::Reader> for Reader {
+    fn from(domain::Reader(id, info): domain::Reader) -> Self {
+        Self { id, info }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NewBookRead {
+    pub reader_id: ReaderId,
+    pub when: Option<OffsetDateTime>,
+}
 
 #[derive(Deserialize)]
 pub struct SearchTerm {
