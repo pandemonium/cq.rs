@@ -117,7 +117,7 @@ pub enum Command {
     AddBook(BookInfo),
     AddAuthor(AuthorInfo),
     AddReader(ReaderInfo),
-    ReadBook(BookReadInfo),
+    AddReadBook(BookReadInfo),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

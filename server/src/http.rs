@@ -224,7 +224,7 @@ mod books {
         ES: EventStore + Clone + 'static,
     {
         if application
-            .submit_command(Command::ReadBook(domain::BookReadInfo {
+            .submit_command(Command::AddReadBook(domain::BookReadInfo {
                 reader_id: reader_id.into(),
                 book_id,
                 when,

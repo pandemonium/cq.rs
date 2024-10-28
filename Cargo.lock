@@ -67,6 +67,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.91"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c042108f3ed77fd83760a5fd79b53be043192bb3b9dba91d8c574c0ada7850c8"
+
+[[package]]
 name = "api_client"
 version = "0.1.0"
 dependencies = [
@@ -272,8 +278,11 @@ checksum = "1462739cb27611015575c0c11df5df7601141071f07518d56fcc1be504cbec97"
 name = "cli"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "api_client",
  "clap",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

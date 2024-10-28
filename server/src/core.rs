@@ -117,7 +117,7 @@ where
                     false
                 }
             }
-            Command::ReadBook(info) => {
+            Command::AddReadBook(info) => {
                 if !self
                     .write_model
                     .read()
