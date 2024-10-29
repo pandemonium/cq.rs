@@ -36,6 +36,10 @@ impl ApiClient {
         self.request_resource("/authors").await
     }
 
+    pub async fn get_readers(&self) -> error::Result<Vec<model::Reader>> {
+        self.request_resource("/readers").await
+    }
+
     pub async fn get_author_by_book(
         &self,
         book_id: model::BookId,
@@ -52,15 +56,40 @@ impl ApiClient {
             .await
     }
 
-    pub async fn put_author(&self, info: model::AuthorInfo) -> error::Result<()> {
-        self.put_resource("/authors", info).await
+    pub async fn get_books_read(
+        &self,
+        reader_id: model::ReaderId,
+    ) -> error::Result<Vec<model::Book>> {
+        self.request_resource(&format!("/readers/{reader_id}/books"))
+            .await
     }
 
-    pub async fn put_book(&self, info: model::BookInfo) -> error::Result<()> {
-        self.put_resource("/books", info).await
+    pub async fn add_author(&self, info: model::AuthorInfo) -> error::Result<()> {
+        self.post_resource("/authors", info).await
     }
 
-    async fn put_resource<R>(&self, uri: &str, resource: R) -> error::Result<()>
+    pub async fn add_book(&self, info: model::BookInfo) -> error::Result<()> {
+        self.post_resource("/books", info).await
+    }
+
+    pub async fn add_reader(&self, info: model::ReaderInfo) -> error::Result<()> {
+        self.post_resource("/readers", info).await
+    }
+
+    pub async fn get_reader_by_moniker(
+        &self,
+        moniker: &str,
+    ) -> error::Result<Option<model::Reader>> {
+        self.request_resource(&format!("/readers/moniker/{}", moniker))
+            .await
+    }
+
+    pub async fn add_read_book(&self, info: model::BookRead) -> error::Result<()> {
+        self.post_resource(&format!("/books/{}/readers", &info.book_id), info)
+            .await
+    }
+
+    async fn post_resource<R>(&self, uri: &str, resource: R) -> error::Result<()>
     where
         R: Serialize,
     {

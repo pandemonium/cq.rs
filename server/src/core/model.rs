@@ -221,6 +221,7 @@ pub mod query {
         authors: HashMap<AuthorId, AuthorInfo>,
         books: HashMap<BookId, BookInfo>,
         readers: HashMap<ReaderId, ReaderInfo>,
+        reader_by_moniker: HashMap<String, ReaderId>,
         books_by_reader_id: HashMap<ReaderId, HashSet<BookReadInfo>>,
         books_by_author_id: HashMap<AuthorId, Vec<BookId>>,
         texts: text::SearchIndex,
@@ -245,6 +246,8 @@ pub mod query {
                     self.authors.insert(id, info);
                 }
                 Event::ReaderAdded(id, info) => {
+                    self.reader_by_moniker
+                        .insert(info.unique_moniker.clone(), id);
                     self.readers.insert(id, info);
                 }
                 Event::BookRead(id, info) => {
@@ -406,6 +409,25 @@ pub mod query {
                 .readers
                 .get(id)
                 .map(|info| Reader(id.clone(), info.clone()))
+        }
+    }
+
+    pub struct UniqueReaderByMoniker(pub String);
+
+    impl IndexSetQuery for UniqueReaderByMoniker {
+        type Output = Option<Reader>;
+
+        fn execute(&self, index: &IndexSet) -> Self::Output {
+            let Self(moniker) = self;
+            index
+                .reader_by_moniker
+                .get(moniker.as_str())
+                .and_then(|reader_id| {
+                    index
+                        .readers
+                        .get(reader_id)
+                        .map(|info| Reader(reader_id.clone(), info.clone()))
+                })
         }
     }
 

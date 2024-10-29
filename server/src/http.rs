@@ -64,6 +64,7 @@ where
     let readers = Router::new()
         .route("/", get(readers::list))
         .route("/", post(readers::create))
+        .route("/moniker/:moniker", get(readers::by_unique_moniker))
         .route("/:id", get(readers::get))
         .route("/:id/books", get(books::by_reader));
 
@@ -361,6 +362,21 @@ mod readers {
         } else {
             Ok(StatusCode::NOT_ACCEPTABLE)
         }
+    }
+
+    pub async fn by_unique_moniker<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(moniker): Path<String>,
+    ) -> ApiResult<Json<Option<model::Reader>>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        Ok(Json(
+            application
+                .issue_query(query::UniqueReaderByMoniker(moniker))
+                .await?
+                .map(|b| b.into()),
+        ))
     }
 }
 

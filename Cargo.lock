@@ -80,6 +80,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "time",
  "tokio",
  "uuid",
 ]
@@ -281,6 +282,7 @@ dependencies = [
  "anyhow",
  "api_client",
  "clap",
+ "time",
  "tokio",
  "uuid",
 ]

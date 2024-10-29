@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use time::UtcOffset;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,6 +45,35 @@ impl fmt::Display for AuthorId {
         let Self(id) = self;
         write!(f, "{id}")
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Reader {
+    pub id: ReaderId,
+    pub info: ReaderInfo,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ReaderId(pub Uuid);
+
+impl fmt::Display for ReaderId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(id) = self;
+        write!(f, "{id}")
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReaderInfo {
+    pub name: String,
+    pub unique_moniker: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BookRead {
+    pub reader_id: ReaderId,
+    pub book_id: BookId,
+    pub when: Option<UtcOffset>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
