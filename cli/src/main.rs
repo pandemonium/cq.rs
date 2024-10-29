@@ -1,6 +1,6 @@
 use anyhow::{Error as AnyhowError, Result};
 use clap::{Parser, Subcommand};
-use std::fmt::{self, write};
+use std::{collections::HashMap, fmt};
 
 use api_client::{model, ApiClient};
 
@@ -75,6 +75,7 @@ struct ReaderInfo {
     unique_moniker: String,
 }
 
+#[derive(Clone)]
 struct Author(model::Author);
 
 impl fmt::Display for Author {
@@ -93,6 +94,7 @@ impl From<model::Author> for Author {
     }
 }
 
+#[derive(Clone)]
 struct Book(model::Book);
 
 impl fmt::Display for Book {
@@ -119,9 +121,47 @@ impl From<model::Book> for Book {
     }
 }
 
-struct ServiceApi(ApiClient);
+struct BookWithAuthor(Book, Author);
 
-impl ServiceApi {
+impl BookWithAuthor {
+    fn joined(books: Vec<model::Book>, authors: Vec<model::Author>) -> Vec<BookWithAuthor> {
+        let author_by_id = authors
+            .iter()
+            .map(|x| (&x.id, x))
+            .collect::<HashMap<_, _>>();
+
+        books
+            .into_iter()
+            .filter_map(|x| {
+                author_by_id
+                    .get(&x.info.author)
+                    .map(|&author| Self(x.into(), author.clone().into()))
+            })
+            .collect()
+    }
+}
+
+impl fmt::Display for BookWithAuthor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(
+            Book(model::Book {
+                id: model::BookId(book_id),
+                info: model::BookInfo { isbn, title, .. },
+            }),
+            Author(model::Author {
+                id: model::AuthorId(author_id),
+                info: model::AuthorInfo { name: author_name },
+            }),
+        ) = self;
+        writeln!(f, "{title} [{isbn}]")?;
+        writeln!(f, "{author_name} [Author ID {author_id}]")?;
+        write!(f, "[Book ID {book_id}]")
+    }
+}
+
+struct BookListApi(ApiClient);
+
+impl BookListApi {
     fn new(client: ApiClient) -> Self {
         Self(client)
     }
@@ -140,8 +180,13 @@ impl ServiceApi {
                 Ok(())
             }
             Command::ListBooks => {
-                for book in client.get_books().await? {
-                    println!("{}", Book::from(book))
+                for (index, book) in
+                    BookWithAuthor::joined(client.get_books().await?, client.get_authors().await?)
+                        .into_iter()
+                        .enumerate()
+                {
+                    println!("{}. {book}", index + 1);
+                    println!()
                 }
                 Ok(())
             }
@@ -153,6 +198,6 @@ impl ServiceApi {
 async fn main() {
     let args = Cli::parse();
     let client = ApiClient::new(&args.base_url);
-    let api = ServiceApi::new(client);
+    let api = BookListApi::new(client);
     api.dispatch(args.command).await.expect("a book to be put");
 }
