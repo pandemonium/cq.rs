@@ -1,6 +1,15 @@
 use anyhow::{Error as AnyhowError, Result};
 use clap::{Parser, Subcommand};
 use std::{collections::HashMap, fmt, str::FromStr};
+use tabled::{
+    builder::Builder,
+    settings::{
+        location::Location,
+        object::{Column, Columns, Object, Rows},
+        Alignment, Style,
+    },
+    Tabled,
+};
 use uuid::Uuid;
 
 use super::domain;
@@ -66,6 +75,24 @@ impl TryFrom<AuthorInfo> for domain::AuthorInfo {
 
 #[derive(Clone)]
 pub struct Author(domain::Author);
+
+impl Author {
+    pub fn table(data: Vec<Self>) -> String {
+        let mut builder = Builder::default();
+        builder.push_record(vec!["", "Id", "Name"]);
+
+        for (index, Author(author)) in data.into_iter().enumerate() {
+            builder.push_record(vec![
+                format!("{}", index + 1),
+                author.id.to_string(),
+                author.info.name,
+            ])
+        }
+
+        let sharp = Style::sharp();
+        builder.build().with(sharp).to_string()
+    }
+}
 
 impl fmt::Display for Author {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -166,6 +193,23 @@ impl BookWithAuthor {
                     .map(|&author| Self(book.into(), author.clone().into()))
             })
             .collect()
+    }
+
+    pub fn table(data: Vec<Self>) -> String {
+        let mut builder = Builder::default();
+        builder.push_record(vec!["", "Id", "Title", "Author", "ISBN"]);
+
+        for (index, BookWithAuthor(Book(book), Author(author))) in data.into_iter().enumerate() {
+            builder.push_record(vec![
+                format!("{}", index + 1),
+                book.id.to_string(),
+                book.info.title,
+                author.info.name,
+                book.info.isbn,
+            ])
+        }
+
+        builder.build().with(Style::sharp()).to_string()
     }
 }
 

@@ -48,22 +48,22 @@ impl BookListServiceApi {
                 }
             }
             model::Command::ListAuthors => {
-                for author in client.get_authors().await? {
-                    println!("{}", model::Author::from(author))
-                }
+                let authors = client
+                    .get_authors()
+                    .await?
+                    .into_iter()
+                    .map(model::Author::from)
+                    .collect();
+                println!("{}", model::Author::table(authors));
                 Ok(())
             }
             model::Command::ListBooks => {
-                for (index, book) in model::BookWithAuthor::joined(
+                let books = model::BookWithAuthor::joined(
                     client.get_books().await?,
                     client.get_authors().await?,
-                )
-                .into_iter()
-                .enumerate()
-                {
-                    println!("{}. {book}", index + 1);
-                    println!()
-                }
+                );
+
+                println!("{}", model::BookWithAuthor::table(books));
                 Ok(())
             }
             model::Command::ListReaders => {
@@ -74,14 +74,11 @@ impl BookListServiceApi {
             }
             model::Command::ListReadBooks { reader_ref } => {
                 if let Some(reader_id) = self.resolve_reader_ref(reader_ref).await? {
-                    for (index, book) in client
-                        .get_books_read(reader_id)
-                        .await?
-                        .into_iter()
-                        .enumerate()
-                    {
-                        println!("{}. {}", index + 1, model::Book::from(book));
-                    }
+                    let books = model::BookWithAuthor::joined(
+                        client.get_books_read(reader_id).await?,
+                        client.get_authors().await?,
+                    );
+                    println!("{}", model::BookWithAuthor::table(books));
                 }
 
                 Ok(())
