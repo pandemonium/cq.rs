@@ -1,15 +1,7 @@
 use anyhow::{Error as AnyhowError, Result};
 use clap::{Parser, Subcommand};
 use std::{collections::HashMap, fmt, str::FromStr};
-use tabled::{
-    builder::Builder,
-    settings::{
-        location::Location,
-        object::{Column, Columns, Object, Rows},
-        Alignment, Style,
-    },
-    Tabled,
-};
+use tabled::{builder::Builder, settings::Style};
 use uuid::Uuid;
 
 use super::domain;
@@ -26,6 +18,10 @@ pub enum Command {
     ListReadBooks {
         #[arg(long)]
         reader_ref: ReaderRef,
+    },
+    Search {
+        #[arg(value_name = "search-term", help = "Term to search for")]
+        search_term: String,
     },
 }
 
@@ -252,5 +248,43 @@ impl FromStr for ReaderRef {
         } else {
             Ok(ReaderRef::ByUniqueMoniker(s.to_owned()))
         }
+    }
+}
+
+pub struct SearchResultItem(domain::SearchResultItem);
+
+impl SearchResultItem {
+    pub fn table(data: Vec<Self>) -> String {
+        let mut builder = Builder::default();
+        builder.push_record(vec!["", "Kind", "Hit", "ID"]);
+
+        for (index, SearchResultItem(domain::SearchResultItem { hit, .. })) in
+            data.into_iter().enumerate()
+        {
+            let mut fields = vec![format!("{}", index + 1)];
+
+            // Should this re-constitute the underlying resource?
+            match hit {
+                domain::SearchHit::BookTitle { title, id } => {
+                    fields.extend(vec!["Book".to_owned(), title, id.to_string()]);
+                }
+                domain::SearchHit::BookIsbn { isbn, id } => {
+                    fields.extend(vec!["Book".to_owned(), isbn, id.to_string()]);
+                }
+                domain::SearchHit::Author { name, id } => {
+                    fields.extend(vec!["Author".to_owned(), name, id.to_string()]);
+                }
+            }
+
+            builder.push_record(fields);
+        }
+
+        builder.build().with(Style::sharp()).to_string()
+    }
+}
+
+impl From<domain::SearchResultItem> for SearchResultItem {
+    fn from(value: domain::SearchResultItem) -> Self {
+        Self(value)
     }
 }

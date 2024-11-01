@@ -10,7 +10,7 @@ pub mod model;
 #[command(name = "blister")]
 #[command(about = "A book management CLI")]
 struct CliArgs {
-    #[arg(long, help = "Base URL of the blister API")]
+    #[arg(long, value_name = "base-url", help = "Base URL of the blister API")]
     base_url: String,
 
     #[command(subcommand)]
@@ -80,6 +80,20 @@ impl BookListServiceApi {
                     );
                     println!("{}", model::BookWithAuthor::table(books));
                 }
+
+                Ok(())
+            }
+            model::Command::Search {
+                search_term: search,
+            } => {
+                let results = client
+                    .search(&search)
+                    .await?
+                    .into_iter()
+                    .map(model::SearchResultItem::from)
+                    .collect();
+
+                println!("{}", model::SearchResultItem::table(results));
 
                 Ok(())
             }
