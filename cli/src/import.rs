@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use csv::ReaderBuilder;
+use isbn::Isbn;
 use serde::Deserialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{self, BufRead, BufReader},
     path::PathBuf,
@@ -15,9 +16,9 @@ use api_client::{model as domain, ApiClient};
 pub async fn from_source(api: ApiClient, source: ImportSource) -> Result<()> {
     let csv_data = read_csv_data(source.make_reader()?);
     Importer { api }
-        .compute_commit_delta(&csv_data?)
+        .compute_import_delta(&csv_data?)
         .await?
-        .send()
+        .import()
         .await
 }
 
@@ -51,8 +52,9 @@ struct Importer {
 }
 
 impl Importer {
-    async fn compute_commit_delta(self, data: &[DataRow]) -> Result<CommitDelta> {
-        let mut commit = CommitDelta::new(self.api);
+    async fn compute_import_delta(self, data: &[DataRow]) -> Result<ImportDelta> {
+        // A little ugly that this owns the API client
+        let mut commit = ImportDelta::new(self.api);
 
         for DataRow {
             title,
@@ -60,12 +62,13 @@ impl Importer {
             author,
         } in data
         {
+            // ... and that these calls happen through the commit.
             if commit.find_existing_book(title, isbn).await?.is_none() {
-                let author = commit.make_canonical_author(&author).await?;
+                let author_id = commit.make_canonical_author_ref(&author).await?;
                 commit.add_book(NewBook {
                     title: title.to_owned(),
-                    isbn: isbn.to_owned(),
-                    author,
+                    isbn: isbn.parse().map_err(|e| anyhow!("ISBN error {e}"))?,
+                    author_id,
                 });
             }
         }
@@ -74,28 +77,23 @@ impl Importer {
     }
 }
 
-struct Author {
-    id: AuthorId,
-    proxy: AuthorProxy,
-}
-
 enum AuthorId {
-    Reference(domain::AuthorId),
     New(Uuid),
+    Existing(domain::AuthorId),
 }
 
-enum AuthorProxy {
+enum Author {
     New(String),
     Reference(domain::AuthorId),
 }
 
-struct CommitDelta {
+struct ImportDelta {
     api: ApiClient,
-    new_authors: HashMap<Uuid, AuthorProxy>,
+    new_authors: HashMap<Uuid, Author>,
     books: Vec<NewBook>,
 }
 
-impl CommitDelta {
+impl ImportDelta {
     fn new(api: ApiClient) -> Self {
         Self {
             api,
@@ -104,40 +102,95 @@ impl CommitDelta {
         }
     }
 
-    async fn make_canonical_author(&mut self, name: &str) -> Result<Author> {
-        todo!()
+    async fn make_canonical_author_ref(&mut self, author_name: &str) -> Result<AuthorId> {
+        if let Some(author_id) = self.find_existing_author(author_name).await? {
+            Ok(AuthorId::Existing(author_id.clone()))
+        } else {
+            let id = Uuid::new_v4();
+            self.new_authors
+                .insert(id, Author::New(author_name.to_owned()));
+            Ok(AuthorId::New(id))
+        }
     }
 
-    async fn find_existing_book(&self, title: &str, isbn: &str) -> Result<Option<domain::BookId>> {
-        todo!()
+    async fn find_existing_author(&self, author_name: &str) -> Result<Option<domain::AuthorId>> {
+        Ok(self.api.search(author_name).await?.into_iter().find_map(
+            |domain::SearchResultItem { hit, .. }| match hit {
+                domain::SearchHit::Author { name, id } if name == author_name => Some(id),
+                _otherwise => None,
+            },
+        ))
+    }
+
+    async fn find_existing_book(
+        &self,
+        book_title: &str,
+        book_isbn: &str,
+    ) -> Result<Option<domain::BookId>> {
+        let mut hits = self.api.search(book_title).await?;
+        hits.extend(self.api.search(book_isbn).await?);
+
+        // What is a good procedure here?
+        // ... this is mildly dubious
+        let xs: HashSet<domain::BookId> = hits
+            .into_iter()
+            .filter_map(|domain::SearchResultItem { hit, .. }| match hit {
+                domain::SearchHit::BookTitle { title, id } if title == book_title => Some(id),
+                domain::SearchHit::BookIsbn { isbn, id } if isbn == book_isbn => Some(id),
+                _otherwise => None,
+            })
+            .collect();
+
+        Ok(xs.into_iter().next())
     }
 
     fn add_book(&mut self, book: NewBook) {
         self.books.push(book);
     }
 
-    async fn send(self) -> Result<()> {
-        let mut existing_authors: HashMap<Uuid, domain::AuthorId> = HashMap::default();
+    async fn import(self) -> Result<()> {
+        let mut authors = HashMap::new();
 
-        for (id, proxy) in self.new_authors {
-            match proxy {
-                AuthorProxy::New(name) => {
-                    self.api.add_author(domain::AuthorInfo { name }).await?;
-                }
-                AuthorProxy::Reference(author_id) => {
-                    let _ = existing_authors.insert(id, author_id);
-                }
-            }
+        for (id, author) in self.new_authors {
+            let author_id = match author {
+                Author::New(name) => self.api.add_author(domain::AuthorInfo { name }).await?,
+                Author::Reference(author_id) => author_id,
+            };
+            println!("Inserting {} -> {}", id, author_id);
+            authors.insert(id, author_id);
         }
 
-        todo!()
+        for NewBook {
+            title,
+            isbn,
+            author_id,
+        } in self.books
+        {
+            let author = match author_id {
+                AuthorId::New(uuid) => authors
+                    .get(&uuid)
+                    .expect("author should have been created")
+                    .clone(),
+                AuthorId::Existing(author_id) => author_id,
+            };
+
+            self.api
+                .add_book(domain::BookInfo {
+                    isbn: isbn.to_string(),
+                    title,
+                    author,
+                })
+                .await?;
+        }
+
+        Ok(())
     }
 }
 
 struct NewBook {
     title: String,
-    isbn: String,
-    author: Author,
+    isbn: Isbn,
+    author_id: AuthorId,
 }
 
 #[derive(Deserialize)]
@@ -152,9 +205,14 @@ where
     R: BufRead,
 {
     let mut data = vec![];
-    let mut csv = ReaderBuilder::new().from_reader(reader);
+    let mut csv = ReaderBuilder::new()
+        .delimiter(b';')
+        .has_headers(false)
+        .from_reader(reader);
     for row in csv.deserialize() {
         data.push(row?);
     }
     Ok(data)
 }
+
+//Liftarens guide till galaxen;9789132212697;Douglas Adams

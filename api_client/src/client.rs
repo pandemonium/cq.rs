@@ -57,16 +57,19 @@ impl ApiClient {
             .await
     }
 
-    pub async fn add_author(&self, info: model::AuthorInfo) -> error::Result<()> {
-        self.post_resource("/authors", info).await
+    pub async fn add_author(&self, info: model::AuthorInfo) -> error::Result<model::AuthorId> {
+        let resource_id: model::ResourceId = self.post_resource("/authors", info).await?;
+        Ok(model::AuthorId(resource_id.id))
     }
 
-    pub async fn add_book(&self, info: model::BookInfo) -> error::Result<()> {
-        self.post_resource("/books", info).await
+    pub async fn add_book(&self, info: model::BookInfo) -> error::Result<model::BookId> {
+        let resource_id: model::ResourceId = self.post_resource("/books", info).await?;
+        Ok(model::BookId(resource_id.id))
     }
 
-    pub async fn add_reader(&self, info: model::ReaderInfo) -> error::Result<()> {
-        self.post_resource("/readers", info).await
+    pub async fn add_reader(&self, info: model::ReaderInfo) -> error::Result<model::ReaderId> {
+        let resource_id: model::ResourceId = self.post_resource("/readers", info).await?;
+        Ok(model::ReaderId(resource_id.id))
     }
 
     pub async fn get_reader_by_moniker(
@@ -93,9 +96,10 @@ impl ApiClient {
         Ok(serde_json::from_slice(&response.bytes().await?)?)
     }
 
-    async fn post_resource<R>(&self, uri: &str, resource: R) -> error::Result<()>
+    async fn post_resource<R, S>(&self, uri: &str, resource: R) -> error::Result<S>
     where
         R: Serialize,
+        S: DeserializeOwned,
     {
         let resource_uri = self.resolve_resource_uri(uri);
         let request = self
@@ -106,7 +110,7 @@ impl ApiClient {
         let response = self.http_client.execute(request).await?;
 
         if response.status().is_success() {
-            Ok(())
+            Ok(response.json().await?)
         } else {
             Err(error::Error::Server(response.status()))
         }

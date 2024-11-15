@@ -30,9 +30,15 @@ impl BookListServiceApi {
     async fn dispatch(&self, command: model::Command) -> Result<()> {
         let Self(client) = self;
         match command {
-            model::Command::AddAuthor(info) => Ok(client.add_author(info.try_into()?).await?),
-            model::Command::AddBook(info) => Ok(client.add_book(info.try_into()?).await?),
-            model::Command::AddReader(info) => Ok(client.add_reader(info.try_into()?).await?),
+            model::Command::AddAuthor(info) => {
+                Ok(client.add_author(info.try_into()?).await.map(|_| ())?)
+            }
+            model::Command::AddBook(info) => {
+                Ok(client.add_book(info.try_into()?).await.map(|_| ())?)
+            }
+            model::Command::AddReader(info) => {
+                Ok(client.add_reader(info.try_into()?).await.map(|_| ())?)
+            }
             model::Command::ReadBook(model::BookRead {
                 reader_moniker,
                 book_id,

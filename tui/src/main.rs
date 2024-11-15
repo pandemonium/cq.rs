@@ -5,7 +5,6 @@ use cursive::{
     view::{Nameable, Resizable, Scrollable},
     views::{Dialog, LinearLayout, SelectView, TextView},
 };
-use std::{thread, time::Duration};
 
 // It does not have to own cursive.
 // run can create cursive, call view on it, then run.

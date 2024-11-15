@@ -92,3 +92,8 @@ pub enum SearchHit {
     #[serde(rename = "author")]
     Author { name: String, id: AuthorId },
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResourceId {
+    pub id: Uuid,
+}

@@ -1,6 +1,6 @@
 use anyhow::{Error as AnyhowError, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use std::{collections::HashMap, fmt, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, fmt, str::FromStr};
 use tabled::{builder::Builder, settings::Style};
 use uuid::Uuid;
 
