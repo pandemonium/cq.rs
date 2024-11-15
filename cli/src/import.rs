@@ -54,7 +54,7 @@ struct Importer {
 impl Importer {
     async fn compute_import_delta(self, data: &[DataRow]) -> Result<ImportDelta> {
         // A little ugly that this owns the API client
-        let mut commit = ImportDelta::new(self.api);
+        let mut import = ImportDelta::new(self.api);
 
         for DataRow {
             title,
@@ -63,9 +63,9 @@ impl Importer {
         } in data
         {
             // ... and that these calls happen through the commit.
-            if commit.find_existing_book(title, isbn).await?.is_none() {
-                let author_id = commit.make_canonical_author_ref(&author).await?;
-                commit.add_book(NewBook {
+            if import.find_existing_book(title, isbn).await?.is_none() {
+                let author_id = import.make_canonical_author_ref(&author).await?;
+                import.add_book(NewBook {
                     title: title.to_owned(),
                     isbn: isbn.parse().map_err(|e| anyhow!("ISBN error {e}"))?,
                     author_id,
@@ -73,7 +73,7 @@ impl Importer {
             }
         }
 
-        Ok(commit)
+        Ok(import)
     }
 }
 
@@ -82,14 +82,9 @@ enum AuthorId {
     Existing(domain::AuthorId),
 }
 
-enum Author {
-    New(String),
-    Reference(domain::AuthorId),
-}
-
 struct ImportDelta {
     api: ApiClient,
-    new_authors: HashMap<Uuid, Author>,
+    new_authors: HashMap<Uuid, String>,
     books: Vec<NewBook>,
 }
 
@@ -107,8 +102,7 @@ impl ImportDelta {
             Ok(AuthorId::Existing(author_id.clone()))
         } else {
             let id = Uuid::new_v4();
-            self.new_authors
-                .insert(id, Author::New(author_name.to_owned()));
+            self.new_authors.insert(id, author_name.to_owned());
             Ok(AuthorId::New(id))
         }
     }
@@ -151,13 +145,8 @@ impl ImportDelta {
     async fn import(self) -> Result<()> {
         let mut authors = HashMap::new();
 
-        for (id, author) in self.new_authors {
-            let author_id = match author {
-                Author::New(name) => self.api.add_author(domain::AuthorInfo { name }).await?,
-                Author::Reference(author_id) => author_id,
-            };
-            println!("Inserting {} -> {}", id, author_id);
-            authors.insert(id, author_id);
+        for (id, name) in self.new_authors {
+            authors.insert(id, self.api.add_author(domain::AuthorInfo { name }).await?);
         }
 
         for NewBook {
@@ -214,5 +203,3 @@ where
     }
     Ok(data)
 }
-
-//Liftarens guide till galaxen;9789132212697;Douglas Adams
