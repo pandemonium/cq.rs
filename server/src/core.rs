@@ -19,6 +19,18 @@ use model::{query, AuthorId, BookId, Command, Event, ReaderId};
 
 pub mod model;
 
+pub enum CommandReceipt {
+    Rejected,
+    Accepted,
+    Created(model::ResourceId),
+}
+
+impl CommandReceipt {
+    pub fn is_success(&self) -> bool {
+        !matches!(self, Self::Rejected)
+    }
+}
+
 struct CommandDispatcher<ES> {
     event_bus: EventBus<ES, Event>,
     write_model: Arc<RwLock<WriteModel>>,
@@ -66,7 +78,7 @@ where
         })
     }
 
-    async fn accept(&self, command: Command) -> bool {
+    async fn accept(&self, command: Command) -> CommandReceipt {
         match command {
             Command::AddBook(info) => {
                 // Can this be transplanted onto a Book aggregate
@@ -85,18 +97,19 @@ where
                         .emit(Event::BookAdded(id, info))
                         .await
                         .expect("emit");
-                    true
+                    CommandReceipt::Created(id.into())
                 } else {
-                    false
+                    CommandReceipt::Rejected
                 }
             }
             Command::AddAuthor(info) => {
+                // This should really check to make sure that it won't accept duplicates
                 let id = AuthorId(UniqueId::fresh());
                 self.event_bus
                     .emit(Event::AuthorAdded(id, info))
                     .await
                     .expect("emit");
-                true
+                CommandReceipt::Created(id.into())
             }
             Command::AddReader(info) => {
                 if self
@@ -112,9 +125,9 @@ where
                         .emit(Event::ReaderAdded(id, info))
                         .await
                         .expect("emit");
-                    true
+                    CommandReceipt::Created(id.into())
                 } else {
-                    false
+                    CommandReceipt::Rejected
                 }
             }
             Command::AddReadBook(info) => {
@@ -130,9 +143,9 @@ where
                         .emit(Event::BookRead(info.reader_id, info))
                         .await
                         .expect("emit");
-                    true
+                    CommandReceipt::Accepted
                 } else {
-                    false
+                    CommandReceipt::Rejected
                 }
             }
         }
@@ -217,7 +230,7 @@ where
     }
 
     // Should be Result<(), ValidationError>
-    pub async fn submit_command(&self, command: Command) -> bool {
+    pub async fn submit_command(&self, command: Command) -> CommandReceipt {
         self.command_dispatcher.accept(command).await
     }
 }

@@ -1,17 +1,22 @@
 use axum::{
+    extract::Path,
+    extract::Query,
     extract::State,
     http::StatusCode,
+    http::{HeaderMap, HeaderValue},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Router,
+    Json, Router,
 };
+use serde::Serialize;
 use std::{result::Result as StdResult, sync::Arc};
 use tokio::net::TcpListener;
+use uuid::Uuid;
 
 use crate::{
     core::{
         model::{self as domain},
-        Application,
+        Application, CommandReceipt,
     },
     error::{Error, Result},
     infrastructure::EventStore,
@@ -107,9 +112,65 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[derive(Serialize)]
+struct Resource {
+    id: Uuid,
+
+    #[serde(skip)]
+    inner: domain::ResourceId,
+}
+
+impl Resource {
+    fn location(&self) -> String {
+        resource_location(
+            match self.inner {
+                domain::ResourceId::Author(..) => "authors",
+                domain::ResourceId::Book(..) => "books",
+                domain::ResourceId::Reader(..) => "readers",
+            },
+            &self.id.to_string(),
+        )
+    }
+}
+
+impl From<domain::ResourceId> for Resource {
+    fn from(inner: domain::ResourceId) -> Self {
+        let id = match inner {
+            domain::ResourceId::Book(id) => id.into(),
+            domain::ResourceId::Author(id) => id.into(),
+            domain::ResourceId::Reader(id) => id.into(),
+        };
+
+        Self { id, inner }
+    }
+}
+
+fn created_response(resource: Resource) -> ApiResult<(StatusCode, HeaderMap, Json<Resource>)> {
+    let mut headers = HeaderMap::default();
+    headers.insert(
+        "Location",
+        HeaderValue::from_str(&resource.location()).map_err(Error::from)?,
+    );
+    Ok((StatusCode::CREATED, headers, Json(resource)))
+}
+
+// I would like this to have the correct URL
+fn resource_location(resource_type: &str, id: &str) -> String {
+    format!("{}/{resource_type}/{id}", API_RESOURCE_PREFIX)
+}
+
+impl From<CommandReceipt> for ApiResult<Response> {
+    fn from(value: CommandReceipt) -> Self {
+        if let CommandReceipt::Created(id) = value {
+            Ok(created_response(id.into())?.into_response())
+        } else {
+            Ok(StatusCode::NOT_ACCEPTABLE.into_response())
+        }
+    }
+}
+
 mod search {
     use super::*;
-    use axum::{extract::Query, Json};
 
     use domain::query;
 
@@ -133,7 +194,6 @@ mod search {
 
 mod books {
     use super::*;
-    use axum::{extract::Path, http::StatusCode, Json};
 
     use domain::{query, Command};
 
@@ -171,15 +231,14 @@ mod books {
     pub async fn create<ES>(
         State(application): State<ApplicationInner<ES>>,
         Json(model::NewBook(book)): Json<model::NewBook>,
-    ) -> ApiResult<StatusCode>
+    ) -> ApiResult<Response>
     where
         ES: EventStore + Clone + 'static,
     {
-        if application.submit_command(Command::AddBook(book)).await {
-            Ok(StatusCode::ACCEPTED)
-        } else {
-            Ok(StatusCode::NOT_ACCEPTABLE)
-        }
+        application
+            .submit_command(Command::AddBook(book))
+            .await
+            .into()
     }
 
     pub async fn by_author<ES>(
@@ -231,6 +290,7 @@ mod books {
                 when,
             }))
             .await
+            .is_success()
         {
             Ok(StatusCode::ACCEPTED)
         } else {
@@ -241,7 +301,6 @@ mod books {
 
 mod authors {
     use super::*;
-    use axum::{extract::Path, http::StatusCode, Json};
 
     use domain::{query, Command};
 
@@ -282,15 +341,14 @@ mod authors {
     pub async fn create<ES>(
         State(application): State<ApplicationInner<ES>>,
         Json(model::NewAuthor(author)): Json<model::NewAuthor>,
-    ) -> ApiResult<StatusCode>
+    ) -> ApiResult<Response>
     where
         ES: EventStore + Clone + 'static,
     {
-        if application.submit_command(Command::AddAuthor(author)).await {
-            Ok(StatusCode::ACCEPTED)
-        } else {
-            Ok(StatusCode::NOT_ACCEPTABLE)
-        }
+        application
+            .submit_command(Command::AddAuthor(author))
+            .await
+            .into()
     }
 
     pub async fn by_book<ES>(
@@ -313,7 +371,6 @@ mod authors {
 
 mod readers {
     use super::*;
-    use axum::{extract::Path, http::StatusCode, Json};
 
     use domain::{query, Command};
 
@@ -353,15 +410,14 @@ mod readers {
     pub async fn create<ES>(
         State(application): State<ApplicationInner<ES>>,
         Json(model::NewReader(reader)): Json<model::NewReader>,
-    ) -> ApiResult<StatusCode>
+    ) -> ApiResult<Response>
     where
         ES: EventStore + Clone + 'static,
     {
-        if application.submit_command(Command::AddReader(reader)).await {
-            Ok(StatusCode::ACCEPTED)
-        } else {
-            Ok(StatusCode::NOT_ACCEPTABLE)
-        }
+        application
+            .submit_command(Command::AddReader(reader))
+            .await
+            .into()
     }
 
     pub async fn by_unique_moniker<ES>(

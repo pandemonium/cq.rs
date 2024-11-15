@@ -1,6 +1,6 @@
 use anyhow::{Error as AnyhowError, Result};
-use clap::{Parser, Subcommand};
-use std::{collections::HashMap, fmt, str::FromStr};
+use clap::{Parser, Subcommand, ValueEnum};
+use std::{collections::HashMap, fmt, path::PathBuf, str::FromStr};
 use tabled::{builder::Builder, settings::Style};
 use uuid::Uuid;
 
@@ -23,6 +23,20 @@ pub enum Command {
         #[arg(value_name = "search-term", help = "Term to search for")]
         search_term: String,
     },
+    Import(ImportSpec),
+}
+
+#[derive(Parser)]
+pub struct ImportSpec {
+    #[arg(long, value_enum)]
+    pub format: ImportFormat,
+
+    pub from: String,
+}
+
+#[derive(Clone, ValueEnum)]
+pub enum ImportFormat {
+    Csv,
 }
 
 #[derive(Parser)]

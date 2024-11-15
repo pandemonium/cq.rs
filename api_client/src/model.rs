@@ -3,7 +3,7 @@ use std::fmt;
 use time::UtcOffset;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Author {
     pub id: AuthorId,
     pub info: AuthorInfo,
@@ -12,7 +12,7 @@ pub struct Author {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct AuthorId(pub Uuid);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AuthorInfo {
     pub name: String,
 }

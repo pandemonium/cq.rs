@@ -1,5 +1,6 @@
 use std::io;
 
+use axum::http::header::InvalidHeaderValue;
 use thiserror::Error;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -16,6 +17,9 @@ pub enum Error {
 
     #[error("IO error {0}")]
     IoError(#[from] io::Error),
+
+    #[error("Axum HTTP error {0}")]
+    AxumHttp(#[from] InvalidHeaderValue),
 
     #[error("Error receving an event {0}")]
     ReceiveError(#[from] RecvError),

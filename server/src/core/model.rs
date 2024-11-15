@@ -138,8 +138,20 @@ pub struct Isbn(pub String);
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorId(pub UniqueId);
 
+impl From<AuthorId> for uuid::Uuid {
+    fn from(AuthorId(UniqueId(id)): AuthorId) -> Self {
+        id
+    }
+}
+
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReaderId(pub UniqueId);
+
+impl From<ReaderId> for uuid::Uuid {
+    fn from(ReaderId(UniqueId(id)): ReaderId) -> Self {
+        id
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReaderInfo {
@@ -183,6 +195,36 @@ impl AggregateIdentity for AuthorId {
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookId(pub UniqueId);
+
+impl From<BookId> for uuid::Uuid {
+    fn from(BookId(UniqueId(id)): BookId) -> Self {
+        id
+    }
+}
+
+pub enum ResourceId {
+    Book(BookId),
+    Author(AuthorId),
+    Reader(ReaderId),
+}
+
+impl From<BookId> for ResourceId {
+    fn from(value: BookId) -> Self {
+        Self::Book(value)
+    }
+}
+
+impl From<AuthorId> for ResourceId {
+    fn from(value: AuthorId) -> Self {
+        Self::Author(value)
+    }
+}
+
+impl From<ReaderId> for ResourceId {
+    fn from(value: ReaderId) -> Self {
+        Self::Reader(value)
+    }
+}
 
 impl AggregateRoot for Book {
     type Id = BookId;

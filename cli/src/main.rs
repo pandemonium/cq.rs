@@ -1,9 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
-
-use api_client::{model as domain, ApiClient};
+use import::ImportSource;
 use uuid::Uuid;
 
+use api_client::{model as domain, ApiClient};
+use model::ImportSpec;
+
+pub mod import;
 pub mod model;
 
 #[derive(Parser)]
@@ -97,6 +100,7 @@ impl BookListServiceApi {
 
                 Ok(())
             }
+            model::Command::Import(import_spec) => Ok(self.import_data(import_spec).await?),
         }
     }
 
@@ -111,6 +115,12 @@ impl BookListServiceApi {
                 Ok(client.get_reader_by_moniker(&moniker).await?.map(|x| x.id))
             }
         }
+    }
+
+    async fn import_data(&self, ImportSpec { from, .. }: ImportSpec) -> Result<()> {
+        let Self(api) = self;
+        let source: ImportSource = from.parse()?;
+        import::from_source(api.clone(), source).await
     }
 }
 

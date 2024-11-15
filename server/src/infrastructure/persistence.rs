@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn xxx() -> Result<()> {
         let keyspace = Config::new("test-keyspace").open()?;
-        let events = keyspace.open_partition("events", PartitionCreateOptions::default())?;
+        let _events = keyspace.open_partition("events", PartitionCreateOptions::default())?;
 
         Ok(())
     }
