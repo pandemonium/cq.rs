@@ -120,9 +120,9 @@ impl EventArchiveInner {
         Ok(())
     }
 
-    fn find_aggregate_events<'a>(
+    fn find_aggregate_events(
         &self,
-        aggregate_id: AggregateId<'a>,
+        aggregate_id: AggregateId<'_>,
     ) -> error::Result<Vec<ExternalRepresentation>> {
         let mut events = vec![];
 
@@ -141,10 +141,7 @@ impl EventArchiveInner {
         Ok(events)
     }
 
-    fn find_event<'a>(
-        &self,
-        event_id: EventId<'a>,
-    ) -> error::Result<Option<ExternalRepresentation>> {
+    fn find_event(&self, event_id: EventId<'_>) -> error::Result<Option<ExternalRepresentation>> {
         if let Some(event_bytes) = self.events.get(&event_id)? {
             let archived = ArchivedRepresentation::from_slice(&event_bytes)?;
             Ok(Some(archived.into_external_representation()))
@@ -187,7 +184,7 @@ impl EventStore for EventArchive {
         &self,
         UniqueId(id): UniqueId,
     ) -> error::Result<Vec<ExternalRepresentation>> {
-        Ok(self.inner().find_aggregate_events(AggregateId(&id))?)
+        self.inner().find_aggregate_events(AggregateId(&id))
     }
 
     async fn persist<E>(&mut self, event: E) -> error::Result<()>

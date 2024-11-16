@@ -175,12 +175,12 @@ impl From<domain::Reader> for Reader {
 impl fmt::Display for Reader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(domain::Reader {
-            id: domain::ReaderId(_0),
             info:
                 domain::ReaderInfo {
                     name,
                     unique_moniker,
                 },
+            ..
         }) = self;
         write!(f, "{name} [{unique_moniker}]")
     }

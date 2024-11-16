@@ -53,6 +53,8 @@ struct Importer {
 }
 
 impl Importer {
+    // I would like to be able to present this in a --dry-run setting
+    // so that it can be inspected
     async fn compute_import_delta(self, data: &[DataRow]) -> Result<ImportDelta> {
         // A little ugly that this owns the API client
         let mut import = ImportDelta::new(self.api);
@@ -67,7 +69,7 @@ impl Importer {
 
             // ... and that these calls happen through the commit.
             if import.find_existing_book(title, &isbn).await?.is_none() {
-                let author_id = import.get_canonical_author_ref(&author).await?;
+                let author_id = import.get_canonical_author_ref(author).await?;
                 import.add_book(NewBook {
                     title: title.to_owned(),
                     isbn,
@@ -190,11 +192,7 @@ impl FromStr for Isbn {
 impl fmt::Display for Isbn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(inner) = self;
-        Ok(write!(
-            f,
-            "{}",
-            inner.hyphenate().expect("invalid ISBN").to_string()
-        )?)
+        Ok(write!(f, "{}", inner.hyphenate().expect("invalid ISBN"))?)
     }
 }
 

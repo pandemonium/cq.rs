@@ -144,10 +144,10 @@ impl AggregateStream {
     where
         E: EventDescriptor,
     {
-        Ok(E::from_external_representation(
+        E::from_external_representation(
             self.0
                 .first()
                 .ok_or(Error::Generic("expected an event".to_owned()))?,
-        )?)
+        )
     }
 }

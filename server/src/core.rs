@@ -117,8 +117,7 @@ where
                     .read()
                     .await
                     .reader_id_by_moniker
-                    .get(&info.unique_moniker)
-                    .is_none()
+                    .contains_key(&info.unique_moniker)
                 {
                     let id = ReaderId(UniqueId::fresh());
                     self.event_bus
@@ -319,10 +318,7 @@ impl WriteModel {
                 self.book_title_ids.entry(info.title).or_default().push(id)
             }
             Event::AuthorAdded(id, info) => {
-                self.author_name_ids
-                    .entry(info.name)
-                    .or_default()
-                    .push(id.clone());
+                self.author_name_ids.entry(info.name).or_default().push(id);
                 self.author_ids.insert(id);
             }
             Event::ReaderAdded(id, info) => {

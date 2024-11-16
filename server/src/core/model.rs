@@ -278,7 +278,7 @@ pub mod query {
         fn apply_event(&mut self, event: Event) {
             match event {
                 Event::BookAdded(id, info) => {
-                    self.books.insert(id.clone(), info.clone());
+                    self.books.insert(id, info.clone());
                     self.books_by_author_id
                         .entry(info.author)
                         .or_default()
@@ -314,7 +314,7 @@ pub mod query {
             index
                 .books
                 .iter()
-                .map(|(id, info)| Book(id.clone(), info.clone()))
+                .map(|(id, info)| Book(*id, info.clone()))
                 .collect()
         }
     }
@@ -326,10 +326,7 @@ pub mod query {
 
         fn execute(&self, index: &IndexSet) -> Self::Output {
             let Self(id) = self;
-            index
-                .books
-                .get(id)
-                .map(|info| Book(id.clone(), info.clone()))
+            index.books.get(id).map(|info| Book(*id, info.clone()))
         }
     }
 
@@ -340,10 +337,7 @@ pub mod query {
 
         fn execute(&self, index: &IndexSet) -> Self::Output {
             let Self(id) = self;
-            index
-                .authors
-                .get(id)
-                .map(|info| Author(id.clone(), info.clone()))
+            index.authors.get(id).map(|info| Author(*id, info.clone()))
         }
     }
 
@@ -358,7 +352,7 @@ pub mod query {
                 index
                     .authors
                     .get(author)
-                    .map(|info| Author(author.clone(), info.clone())) // this pattern repeats.
+                    .map(|info| Author(*author, info.clone())) // this pattern repeats.
             })
         }
     }
@@ -381,11 +375,11 @@ pub mod query {
                             index
                                 .books
                                 .get(book_id)
-                                .map(|info| Book(book_id.clone(), info.clone()))
+                                .map(|info| Book(*book_id, info.clone()))
                         })
                         .collect::<Option<Vec<_>>>()
                 })
-                .unwrap_or(vec![])
+                .unwrap_or_default()
         }
     }
 
@@ -398,7 +392,7 @@ pub mod query {
             index
                 .authors
                 .iter()
-                .map(|(id, info)| Author(id.clone(), info.clone()))
+                .map(|(id, info)| Author(*id, info.clone()))
                 .collect()
         }
     }
@@ -413,12 +407,7 @@ pub mod query {
             if let Some(book_ids) = index.books_by_author_id.get(author_id) {
                 book_ids
                     .iter()
-                    .filter_map(|id| {
-                        index
-                            .books
-                            .get(id)
-                            .map(|info| Book(id.clone(), info.clone()))
-                    })
+                    .filter_map(|id| index.books.get(id).map(|info| Book(*id, info.clone())))
                     .collect::<Vec<_>>()
             } else {
                 vec![]
@@ -435,7 +424,7 @@ pub mod query {
             index
                 .readers
                 .iter()
-                .map(|(id, info)| Reader(id.clone(), info.clone()))
+                .map(|(id, info)| Reader(*id, info.clone()))
                 .collect()
         }
     }
@@ -447,10 +436,7 @@ pub mod query {
 
         fn execute(&self, index: &IndexSet) -> Self::Output {
             let Self(id) = self;
-            index
-                .readers
-                .get(id)
-                .map(|info| Reader(id.clone(), info.clone()))
+            index.readers.get(id).map(|info| Reader(*id, info.clone()))
         }
     }
 
@@ -468,7 +454,7 @@ pub mod query {
                     index
                         .readers
                         .get(reader_id)
-                        .map(|info| Reader(reader_id.clone(), info.clone()))
+                        .map(|info| Reader(*reader_id, info.clone()))
                 })
         }
     }
