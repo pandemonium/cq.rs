@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
+use core::fmt;
 use csv::ReaderBuilder;
-use isbn::Isbn;
+use isbn;
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -62,12 +63,14 @@ impl Importer {
             author,
         } in data
         {
+            let isbn: Isbn = isbn.parse()?;
+
             // ... and that these calls happen through the commit.
-            if import.find_existing_book(title, isbn).await?.is_none() {
-                let author_id = import.make_canonical_author_ref(&author).await?;
+            if import.find_existing_book(title, &isbn).await?.is_none() {
+                let author_id = import.get_canonical_author_ref(&author).await?;
                 import.add_book(NewBook {
                     title: title.to_owned(),
-                    isbn: isbn.parse().map_err(|e| anyhow!("ISBN error {e}"))?,
+                    isbn,
                     author_id,
                 });
             }
@@ -97,7 +100,7 @@ impl ImportDelta {
         }
     }
 
-    async fn make_canonical_author_ref(&mut self, author_name: &str) -> Result<AuthorId> {
+    async fn get_canonical_author_ref(&mut self, author_name: &str) -> Result<AuthorId> {
         if let Some(author_id) = self.find_existing_author(author_name).await? {
             Ok(AuthorId::Existing(author_id.clone()))
         } else {
@@ -119,13 +122,11 @@ impl ImportDelta {
     async fn find_existing_book(
         &self,
         book_title: &str,
-        book_isbn: &str,
+        book_isbn: &Isbn,
     ) -> Result<Option<domain::BookId>> {
-        let mut hits = self.api.search(book_title).await?;
-        hits.extend(self.api.search(book_isbn).await?);
+        let book_isbn = book_isbn.to_string();
+        let hits = self.api.search(&book_isbn).await?;
 
-        // What is a good procedure here?
-        // ... this is mildly dubious
         let xs: HashSet<domain::BookId> = hits
             .into_iter()
             .filter_map(|domain::SearchResultItem { hit, .. }| match hit {
@@ -173,6 +174,27 @@ impl ImportDelta {
         }
 
         Ok(())
+    }
+}
+
+struct Isbn(isbn::Isbn);
+
+impl FromStr for Isbn {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(Self(s.parse().map_err(|e| anyhow!("{e}"))?))
+    }
+}
+
+impl fmt::Display for Isbn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(inner) = self;
+        Ok(write!(
+            f,
+            "{}",
+            inner.hyphenate().expect("invalid ISBN").to_string()
+        )?)
     }
 }
 
