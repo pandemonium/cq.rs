@@ -17,6 +17,17 @@ pub mod persistence;
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UniqueId(pub Uuid);
 
+impl UniqueId {
+    pub fn fresh() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    pub fn uuid(&self) -> &Uuid {
+        let Self(id) = self;
+        id
+    }
+}
+
 impl Display for UniqueId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let UniqueId(id) = self;
@@ -54,12 +65,6 @@ impl TerminationWaiter {
 
     pub async fn wait(&self) {
         self.0.lock().await.recv().await.expect("wtf")
-    }
-}
-
-impl UniqueId {
-    pub fn fresh() -> Self {
-        Self(Uuid::new_v4())
     }
 }
 

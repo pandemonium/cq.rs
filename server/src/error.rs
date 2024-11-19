@@ -27,6 +27,9 @@ pub enum Error {
     #[error("Generic error {0}")]
     Generic(String),
 
+    #[error("Regex error {0}")]
+    Regex(#[from] regex::Error),
+
     #[error("Fjall persistence error {0}")]
     EventArchive(#[from] fjall::Error),
 }

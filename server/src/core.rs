@@ -15,7 +15,7 @@ use crate::{
     error::{Error, Result},
     infrastructure::{EventDescriptor, EventStore, Termination, TerminationWaiter, UniqueId},
 };
-use model::{query, AuthorId, BookId, Command, Event, ReaderId};
+use model::{query, AuthorId, BookId, Command, Event, KeywordTarget, ReaderId};
 
 pub mod model;
 
@@ -112,7 +112,7 @@ where
                 CommandReceipt::Created(id.into())
             }
             Command::AddReader(info) => {
-                if self
+                if !self
                     .write_model
                     .read()
                     .await
@@ -140,6 +140,24 @@ where
                 {
                     self.event_bus
                         .emit(Event::BookRead(info.reader_id, info))
+                        .await
+                        .expect("emit");
+                    CommandReceipt::Accepted
+                } else {
+                    CommandReceipt::Rejected
+                }
+            }
+            Command::AddKeyword(keyword, target) => {
+                if !self
+                    .write_model
+                    .read()
+                    .await
+                    .keyword_targets
+                    .get(keyword.as_ref())
+                    .is_some_and(|targets| targets.contains(&target))
+                {
+                    self.event_bus
+                        .emit(Event::KeywordAdded(target, keyword.into_string()))
                         .await
                         .expect("emit");
                     CommandReceipt::Accepted
@@ -305,10 +323,14 @@ where
 #[derive(Default)]
 struct WriteModel {
     author_name_ids: HashMap<String, Vec<AuthorId>>,
-    book_title_ids: HashMap<String, Vec<BookId>>,
     author_ids: HashSet<AuthorId>,
+
+    book_title_ids: HashMap<String, Vec<BookId>>,
+
     reader_id_by_moniker: HashMap<String, ReaderId>,
     books_read: HashMap<ReaderId, HashSet<BookId>>,
+
+    keyword_targets: HashMap<String, HashSet<KeywordTarget>>,
 }
 
 impl WriteModel {
@@ -326,6 +348,12 @@ impl WriteModel {
             }
             Event::BookRead(id, info) => {
                 self.books_read.entry(id).or_default().insert(info.book_id);
+            }
+            Event::KeywordAdded(target, keyword) => {
+                self.keyword_targets
+                    .entry(keyword)
+                    .or_default()
+                    .insert(target);
             }
         }
     }

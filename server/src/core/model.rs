@@ -1,5 +1,6 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::{str::FromStr, sync::OnceLock, time::SystemTime};
 use time::OffsetDateTime;
 
 use crate::{
@@ -16,6 +17,7 @@ pub enum Event {
     AuthorAdded(AuthorId, AuthorInfo),
     ReaderAdded(ReaderId, ReaderInfo),
     BookRead(ReaderId, BookReadInfo),
+    KeywordAdded(KeywordTarget, String),
 }
 
 impl Event {
@@ -23,6 +25,7 @@ impl Event {
     const AUTHOR_ADDED: &str = "author-added";
     const READER_ADDED: &str = "reader-added";
     const BOOK_READ: &str = "book-read";
+    const KEYWORD_ADDED: &str = "keyword-added";
 
     fn name(&self) -> &str {
         match self {
@@ -30,6 +33,7 @@ impl Event {
             Event::AuthorAdded(..) => Self::AUTHOR_ADDED,
             Event::ReaderAdded(..) => Self::READER_ADDED,
             Event::BookRead(..) => Self::BOOK_READ,
+            Event::KeywordAdded(..) => Self::KEYWORD_ADDED,
         }
     }
 }
@@ -73,6 +77,13 @@ impl EventDescriptor for Event {
                 what: self.name().to_owned(),
                 data: serde_json::to_value(info)?,
             }),
+            Event::KeywordAdded(target, keyword) => Ok(ExternalRepresentation {
+                id,
+                when,
+                aggregate_id: *target.aggregate_id().uuid(),
+                what: self.name().to_owned(),
+                data: serde_json::to_value(keyword)?,
+            }),
         }
     }
 
@@ -106,6 +117,21 @@ impl EventDescriptor for Event {
     }
 }
 
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+pub enum KeywordTarget {
+    Book(BookId),
+    Author(AuthorId),
+}
+
+impl KeywordTarget {
+    fn aggregate_id(&self) -> &UniqueId {
+        match self {
+            KeywordTarget::Book(BookId(book_id)) => book_id,
+            KeywordTarget::Author(AuthorId(author_id)) => author_id,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Author(pub AuthorId, pub AuthorInfo);
 
@@ -118,6 +144,44 @@ pub enum Command {
     AddAuthor(AuthorInfo),
     AddReader(ReaderInfo),
     AddReadBook(BookReadInfo),
+    AddKeyword(Keyword, KeywordTarget),
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct Keyword(String);
+
+impl Keyword {
+    pub fn into_string(self) -> String {
+        let Self(string) = self;
+        string
+    }
+}
+
+impl AsRef<str> for Keyword {
+    fn as_ref(&self) -> &str {
+        let Self(inner) = self;
+        &inner
+    }
+}
+
+static KEYWORD_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn keyword_regex() -> &'static Regex {
+    KEYWORD_REGEX.get_or_init(|| Regex::new(r"[\p{L}-_]+").expect("KEYWORD_REGEX is valid"))
+}
+
+impl FromStr for Keyword {
+    type Err = Error;
+
+    fn from_str(keyword: &str) -> Result<Self> {
+        if keyword_regex().is_match(keyword) {
+            Ok(Self(keyword.to_owned()))
+        } else {
+            Err(Error::Generic(format!(
+                "{keyword} is not a valid keyword name"
+            )))
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -267,6 +331,7 @@ pub mod query {
         books_by_reader_id: HashMap<ReaderId, HashSet<BookReadInfo>>,
         books_by_author_id: HashMap<AuthorId, Vec<BookId>>,
         texts: text::SearchIndex,
+        keywords: keywords::Index,
     }
 
     impl IndexSet {
@@ -294,6 +359,9 @@ pub mod query {
                 }
                 Event::BookRead(id, info) => {
                     self.books_by_reader_id.entry(id).or_default().insert(info);
+                }
+                Event::KeywordAdded(target, keyword) => {
+                    self.keywords.add_keyword_to_target(keyword, target)
                 }
             }
         }
@@ -459,6 +527,85 @@ pub mod query {
         }
     }
 
+    pub mod keywords {
+        use bimap::BiHashMap;
+
+        use super::*;
+        use crate::core::model::KeywordTarget;
+
+        #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+        struct KeywordId(u16);
+
+        #[derive(Debug, Default)]
+        struct KeywordMap {
+            next_id: u16,
+            inner: BiHashMap<String, KeywordId>,
+        }
+
+        impl KeywordMap {
+            fn get_or_reserve_id(&mut self, keyword: String) -> KeywordId {
+                self.inner
+                    .get_by_left(&keyword)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        let id = KeywordId(self.next_id);
+                        self.inner.insert(keyword, id);
+                        self.next_id += 1;
+                        id
+                    })
+            }
+
+            fn lookup_id(&self, keyword: &str) -> Option<&KeywordId> {
+                self.inner.get_by_left(keyword)
+            }
+
+            fn resolve(&self, id: KeywordId) -> Option<&str> {
+                self.inner.get_by_right(&id).map(|s| s.as_str())
+            }
+        }
+
+        #[derive(Debug, Default)]
+        pub struct Index {
+            keyword_map: KeywordMap,
+            target_keywords: HashMap<KeywordTarget, HashSet<KeywordId>>,
+            keyword_targets: HashMap<KeywordId, HashSet<KeywordTarget>>,
+        }
+
+        impl Index {
+            pub fn add_keyword_to_target(&mut self, keyword: String, target: KeywordTarget) {
+                let id = self.keyword_map.get_or_reserve_id(keyword);
+                self.target_keywords.entry(target).or_default().insert(id);
+                self.keyword_targets.entry(id).or_default().insert(target);
+            }
+
+            pub fn get_keywords(&self, target: &KeywordTarget) -> Vec<String> {
+                self.target_keywords
+                    .get(target)
+                    .map(|keywords| {
+                        keywords
+                            .iter()
+                            .map(|id| {
+                                self.keyword_map
+                                    .resolve(*id)
+                                    .map(|s| s.to_owned())
+                                    .expect("consistent maps")
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+
+            pub fn remove_keyword_from_target(&mut self, keyword: &str, target: KeywordTarget) {
+                if let Some(id) = self.keyword_map.lookup_id(keyword) {
+                    if let Some(targets) = self.keyword_targets.get_mut(id) {
+                        targets.remove(&target);
+                        self.target_keywords.remove(&target);
+                    }
+                }
+            }
+        }
+    }
+
     pub mod text {
         use std::{
             cmp::Eq,
@@ -507,6 +654,8 @@ pub mod query {
                     // Don't index these
                     Event::ReaderAdded(..) => (),
                     Event::BookRead(..) => (),
+                    // Think about this.
+                    Event::KeywordAdded(..) => (),
                 }
             }
 

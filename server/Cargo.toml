@@ -32,3 +32,5 @@ tracing-subscriber = { version = "0.3.18", features = [
 ] }
 thiserror = "1.0.64"
 fjall = "2.2.0"
+regex = "1.11.1"
+bimap = "0.6.3"
