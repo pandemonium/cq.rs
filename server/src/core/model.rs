@@ -1,3 +1,4 @@
+use core::fmt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{str::FromStr, sync::OnceLock, time::SystemTime};
@@ -38,6 +39,12 @@ impl Event {
             Event::KeywordAdded(..) => Self::KEYWORD_ADDED,
         }
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct KeywordAddedSurrogate {
+    keyword: String,
+    target: KeywordTarget,
 }
 
 impl EventDescriptor for Event {
@@ -84,7 +91,10 @@ impl EventDescriptor for Event {
                 when,
                 aggregate_id: *target.aggregate_id().uuid(),
                 what: self.name().to_owned(),
-                data: serde_json::to_value(keyword)?,
+                data: serde_json::to_value(KeywordAddedSurrogate {
+                    keyword: keyword.to_owned(),
+                    target: *target,
+                })?,
             }),
         }
     }
@@ -114,12 +124,17 @@ impl EventDescriptor for Event {
                 ReaderId(UniqueId(*aggregate_id)),
                 serde_json::from_value(data.clone())?,
             )),
+            Event::KEYWORD_ADDED => {
+                let KeywordAddedSurrogate { keyword, target }: KeywordAddedSurrogate =
+                    serde_json::from_value(data.clone())?;
+                Ok(Event::KeywordAdded(target, keyword))
+            }
             otherwise => Err(Error::UnknownEventType(otherwise.to_owned())),
         }
     }
 }
 
-#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeywordTarget {
     Book(BookId),
     Author(AuthorId),
@@ -149,7 +164,7 @@ pub enum Command {
     AddKeyword(Keyword, KeywordTarget),
 }
 
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Keyword(String);
 
 impl Keyword {
@@ -166,10 +181,17 @@ impl AsRef<str> for Keyword {
     }
 }
 
+impl fmt::Display for Keyword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self(keyword) = self;
+        write!(f, "{}", keyword)
+    }
+}
+
 static KEYWORD_REGEX: OnceLock<Regex> = OnceLock::new();
 
 fn keyword_regex() -> &'static Regex {
-    KEYWORD_REGEX.get_or_init(|| Regex::new(r"[\p{L}-_]+").expect("KEYWORD_REGEX is valid"))
+    KEYWORD_REGEX.get_or_init(|| Regex::new(r"[\p{L}_-]+").expect("KEYWORD_REGEX is valid"))
 }
 
 impl FromStr for Keyword {

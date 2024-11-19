@@ -56,6 +56,8 @@ where
         .route("/", get(books::list))
         .route("/", post(books::create))
         .route("/:id", get(books::get))
+        .route("/:id/keywords", get(keywords::by_book))
+        .route("/:id/keywords", post(keywords::add_to_book))
         .route("/:id/readers", post(books::add_reader))
         .route("/:id/author", get(authors::by_book)); // todo: 'authors' and change the
                                                       // model tor reflect this
@@ -64,6 +66,8 @@ where
         .route("/", get(authors::list))
         .route("/", post(authors::create))
         .route("/:id", get(authors::get))
+        .route("/:id/keywords", get(keywords::by_author))
+        .route("/:id/keywords", post(keywords::add_to_author))
         .route("/:id/books", get(books::by_author));
 
     let readers = Router::new()
@@ -73,13 +77,19 @@ where
         .route("/:id", get(readers::get))
         .route("/:id/books", get(books::by_reader));
 
+    let keywords = Router::new()
+        .route("/", get(keywords::list))
+        // Would like to be able to supply multiple keywords
+        .route("/:keyword/targets", get(keywords::targets));
+
     let search = get(search::text);
 
     let api = Router::new()
         .nest("/books", books)
         .nest("/authors", authors)
         .nest("/readers", readers)
-        .route("/search", search);
+        .route("/search", search)
+        .nest("/keywords", keywords);
 
     Router::new()
         .route("/", get(system_root))
@@ -161,11 +171,122 @@ fn resource_location(resource_type: &str, id: &str) -> String {
 
 impl From<CommandReceipt> for ApiResult<Response> {
     fn from(value: CommandReceipt) -> Self {
-        if let CommandReceipt::Created(id) = value {
-            Ok(created_response(id.into())?.into_response())
-        } else {
-            Ok(StatusCode::NOT_ACCEPTABLE.into_response())
-        }
+        Ok(match value {
+            CommandReceipt::Rejected => StatusCode::NOT_ACCEPTABLE.into_response(),
+            CommandReceipt::Accepted => StatusCode::ACCEPTED.into_response(),
+            CommandReceipt::Created(id) => created_response(id.into())?.into_response(),
+        })
+    }
+}
+
+mod keywords {
+    use super::*;
+
+    use domain::query;
+
+    pub async fn list<ES>(
+        State(application): State<ApplicationInner<ES>>,
+    ) -> ApiResult<Json<Vec<String>>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        Ok(Json(
+            application
+                .issue_query(query::AllKeywords)
+                .await?
+                .into_iter()
+                .collect(),
+        ))
+    }
+
+    pub async fn targets<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(keyword): Path<String>,
+    ) -> ApiResult<Json<Vec<model::KeywordTarget>>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        Ok(Json(
+            application
+                .issue_query(query::KeywordTargets(keyword.parse()?))
+                .await?
+                .into_iter()
+                .map(|b| b.into())
+                .collect(),
+        ))
+    }
+
+    pub async fn by_book<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(model::BookId(book_id)): Path<model::BookId>,
+    ) -> ApiResult<Json<Vec<String>>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        Ok(Json(
+            application
+                .issue_query(query::TargetKeywords(domain::KeywordTarget::Book(book_id)))
+                .await?
+                .into_iter()
+                .collect(),
+        ))
+    }
+
+    pub async fn add_to_book<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(model::BookId(book_id)): Path<model::BookId>,
+        keyword: String,
+    ) -> ApiResult<Response>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        let keyword = keyword.parse()?;
+        application
+            .submit_command(domain::Command::AddKeyword(
+                keyword,
+                domain::KeywordTarget::Book(book_id),
+            ))
+            .await
+            .into()
+    }
+
+    pub async fn by_author<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(model::AuthorId(author_id)): Path<model::AuthorId>,
+    ) -> ApiResult<Json<Vec<String>>>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        Ok(Json(
+            application
+                .issue_query(query::TargetKeywords(domain::KeywordTarget::Author(
+                    author_id,
+                )))
+                .await?
+                .into_iter()
+                .collect(),
+        ))
+    }
+
+    pub async fn add_to_author<ES>(
+        State(application): State<ApplicationInner<ES>>,
+        Path(model::AuthorId(author_id)): Path<model::AuthorId>,
+        keyword: String,
+    ) -> ApiResult<Response>
+    where
+        ES: EventStore + Clone + 'static,
+    {
+        let keyword = keyword.parse()?;
+
+        println!("keyword: {}", keyword);
+
+        application
+            .submit_command(domain::Command::AddKeyword(
+                keyword,
+                domain::KeywordTarget::Author(author_id),
+            ))
+            .await
+            .into()
     }
 }
 

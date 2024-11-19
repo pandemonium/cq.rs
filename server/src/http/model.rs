@@ -5,6 +5,26 @@ use time::OffsetDateTime;
 use crate::core::model as domain;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum KeywordTarget {
+    Book { book_id: BookId },
+    Author { author_id: AuthorId },
+}
+
+impl From<domain::KeywordTarget> for KeywordTarget {
+    fn from(value: domain::KeywordTarget) -> Self {
+        match value {
+            domain::KeywordTarget::Book(book_id) => Self::Book {
+                book_id: book_id.into(),
+            },
+            domain::KeywordTarget::Author(author_id) => Self::Author {
+                author_id: author_id.into(),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct AuthorId(pub domain::AuthorId);
 
 impl fmt::Display for AuthorId {
