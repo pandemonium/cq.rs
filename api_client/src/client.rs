@@ -1,10 +1,7 @@
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{
-    error,
-    model::{self, AuthorId, BookId},
-};
+use crate::{error, model};
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -93,13 +90,21 @@ impl ApiClient {
         Ok(model::ReaderId(resource_id.id))
     }
 
-    pub async fn add_keyword_to_book(&self, id: BookId, keyword: String) -> error::Result<()> {
+    pub async fn add_keyword_to_book(
+        &self,
+        id: model::BookId,
+        keyword: String,
+    ) -> error::Result<()> {
         Ok(self
             .post_resource(&format!("/books/{id}/keywords"), keyword)
             .await?)
     }
 
-    pub async fn add_keyword_to_author(&self, id: AuthorId, keyword: String) -> error::Result<()> {
+    pub async fn add_keyword_to_author(
+        &self,
+        id: model::AuthorId,
+        keyword: String,
+    ) -> error::Result<()> {
         Ok(self
             .post_resource(&format!("/authors/{id}/keywords"), keyword)
             .await?)

@@ -33,6 +33,14 @@ impl ApiClient {
         self.request_resource("/readers")
     }
 
+    pub fn get_book_keywords(&self, id: model::BookId) -> error::Result<Vec<String>> {
+        self.request_resource(&format!("/books/{}/keywords", id))
+    }
+
+    pub fn get_author_keywords(&self, id: model::AuthorId) -> error::Result<Vec<String>> {
+        self.request_resource(&format!("/authors/{}/keywords", id))
+    }
+
     pub fn get_author_by_book(
         &self,
         book_id: model::BookId,
@@ -51,6 +59,10 @@ impl ApiClient {
         self.request_resource(&format!("/readers/{reader_id}/books"))
     }
 
+    pub fn get_keyword_targets(&self, keyword: String) -> error::Result<model::KeywordTarget> {
+        self.request_resource(&format!("/keywords/{keyword}/targets"))
+    }
+
     pub fn add_author(&self, info: model::AuthorInfo) -> error::Result<()> {
         self.post_resource("/authors", info)
     }
@@ -61,6 +73,14 @@ impl ApiClient {
 
     pub fn add_reader(&self, info: model::ReaderInfo) -> error::Result<()> {
         self.post_resource("/readers", info)
+    }
+
+    pub fn add_keyword_to_book(&self, id: model::BookId, keyword: String) -> error::Result<()> {
+        Ok(self.post_resource(&format!("/books/{id}/keywords"), keyword)?)
+    }
+
+    pub fn add_keyword_to_author(&self, id: model::AuthorId, keyword: String) -> error::Result<()> {
+        Ok(self.post_resource(&format!("/authors/{id}/keywords"), keyword)?)
     }
 
     pub fn get_reader_by_moniker(&self, moniker: &str) -> error::Result<Option<model::Reader>> {
