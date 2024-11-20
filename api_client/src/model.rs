@@ -97,3 +97,10 @@ pub enum SearchHit {
 pub struct ResourceId {
     pub id: Uuid,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum KeywordTarget {
+    Book { book_id: BookId },
+    Author { author_id: AuthorId },
+}

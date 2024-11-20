@@ -1,7 +1,10 @@
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{error, model};
+use crate::{
+    error,
+    model::{self, AuthorId, BookId},
+};
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -33,6 +36,16 @@ impl ApiClient {
         self.request_resource("/readers").await
     }
 
+    pub async fn get_book_keywords(&self, id: model::BookId) -> error::Result<Vec<String>> {
+        self.request_resource(&format!("/books/{}/keywords", id))
+            .await
+    }
+
+    pub async fn get_author_keywords(&self, id: model::AuthorId) -> error::Result<Vec<String>> {
+        self.request_resource(&format!("/authors/{}/keywords", id))
+            .await
+    }
+
     pub async fn get_author_by_book(
         &self,
         book_id: model::BookId,
@@ -57,6 +70,14 @@ impl ApiClient {
             .await
     }
 
+    pub async fn get_keyword_targets(
+        &self,
+        keyword: String,
+    ) -> error::Result<model::KeywordTarget> {
+        self.request_resource(&format!("/keywords/{keyword}/targets"))
+            .await
+    }
+
     pub async fn add_author(&self, info: model::AuthorInfo) -> error::Result<model::AuthorId> {
         let resource_id: model::ResourceId = self.post_resource("/authors", info).await?;
         Ok(model::AuthorId(resource_id.id))
@@ -70,6 +91,18 @@ impl ApiClient {
     pub async fn add_reader(&self, info: model::ReaderInfo) -> error::Result<model::ReaderId> {
         let resource_id: model::ResourceId = self.post_resource("/readers", info).await?;
         Ok(model::ReaderId(resource_id.id))
+    }
+
+    pub async fn add_keyword_to_book(&self, id: BookId, keyword: String) -> error::Result<()> {
+        Ok(self
+            .post_resource(&format!("/books/{id}/keywords"), keyword)
+            .await?)
+    }
+
+    pub async fn add_keyword_to_author(&self, id: AuthorId, keyword: String) -> error::Result<()> {
+        Ok(self
+            .post_resource(&format!("/authors/{id}/keywords"), keyword)
+            .await?)
     }
 
     pub async fn get_reader_by_moniker(
